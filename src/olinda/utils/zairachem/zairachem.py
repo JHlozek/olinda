@@ -1,14 +1,9 @@
 """ZairaChem predictor"""
-import zairachem
+ZAIRACHEM_PATH = "/home/Jason/code/zairachem-docker"
+
+#import zairachem
 import ersilia
 from ersilia import ErsiliaModel
-
-from zairachem.setup.prediction import ZairaPredictSetup
-from zairachem.descriptors.describe import Describer
-from zairachem.estimators.pipe import EstimatorPipeline
-from zairachem.pool.pool import Pooler
-from zairachem.finish.finisher import Finisher
-from zairachem.reports.report import Reporter
 
 import pandas as pd
 import os
@@ -23,91 +18,65 @@ from loguru import logger
 import glob
 from pathlib import Path
 from progress.bar import Bar
+import subprocess
 
 class ZairaChemPredictor(object):
-    def __init__(self, input_file, model_dir, output_dir, clean, flush):
+    def __init__(self, input_file, model_dir, output_dir):
         self.input_file = input_file
         self.model_dir = model_dir
         self.output_dir = output_dir
-        self.clean = clean
-        self.flush = flush
         self.precalc_path = os.path.dirname(self.input_file)
     
     def predict(self):
-        with Bar("ZairaChem Stage", max=6) as bar:
+        with Bar("ZairaChem Stage", max=7) as bar:
             with HiddenPrints():
-                self.s = ZairaPredictSetup(
-	            input_file=self.input_file,
-	            output_dir=self.output_dir,
-	            model_dir=self.model_dir,
-	            time_budget=60, 
-                )
-                self.data_files(self.s)
+                subprocess.run(["conda", "run", "-n", "zairasetup", "python", os.path.join(ZAIRACHEM_PATH, "01_setup/zairasetup/run_predict.py"), "-i", self.input_file, "-m", self.model_dir, "-o", self.output_dir])
+                self.data_files()
                 bar.next()
-                            
-                d = Describer(path=self.output_dir)
-                self.run_descriptors(d)
+
+                self.precalc_descriptors()
+                subprocess.run(["conda", "run", "-n", "zairadescribe", "python", os.path.join(ZAIRACHEM_PATH, "02_describe/zairadescribe/run.py")])
                 bar.next()
-                
-                e = EstimatorPipeline(path=self.output_dir)
-                e.run()
+               
+                subprocess.run(["conda", "run", "-n", "zairatreat", "python", os.path.join(ZAIRACHEM_PATH, "03_treat/zairatreat/run.py")])
                 bar.next()
-                
-                p = Pooler(path=self.output_dir)
-                p.run()
+            
+                subprocess.run(["conda", "run", "-n", "zairaestimate", "python", os.path.join(ZAIRACHEM_PATH, "04_estimate/zairaestimate/run.py")])
                 bar.next()
-                
-                r = Reporter(path=self.output_dir)
-                r._output_table()
+               
+                subprocess.run(["conda", "run", "-n", "zairapool", "python", os.path.join(ZAIRACHEM_PATH, "05_pool/zairapool/run.py")])
                 bar.next()
-                
-                f = Finisher(path=self.output_dir, clean=self.clean, flush=self.flush)
-                f.run()
+               
+                subprocess.run(["conda", "run", "-n", "zairareport", "python", os.path.join(ZAIRACHEM_PATH, "06_report/zairareport/run.py")])
                 bar.next()
-        
+
+                subprocess.run(["conda", "run", "-n", "zairafinish", "python", os.path.join(ZAIRACHEM_PATH, "07_finish/zairafinish/run.py")])
+                bar.next()
+            
         return self.clean_output(self.output_dir)
- 
-    def data_files(self, s):
-        s._initialize()
-        s._normalize_input()
-        
+
+    def data_files(self):
         #update mapping file
         shutil.copy(os.path.join(self.precalc_path, "data", "mapping.csv"), os.path.join(self.output_dir, "data"))
         shutil.copy(os.path.join(self.precalc_path, "data", "data.csv"), os.path.join(self.output_dir, "data"))
-        shutil.copy(os.path.join(self.precalc_path, "data", "data_schema.json"), os.path.join(self.output_dir, "data"))
-        
-        s._check()
  
-    def run_descriptors(self, d: Describer) -> None:   
-        d.reset_time()
-        self.precalc_descriptors()
-        d._treated_descriptions()
-        d._manifolds()
-        d.update_elapsed_time()
-        
     def precalc_descriptors(self) -> None:
-        shutil.copytree(os.path.join(self.precalc_path, "descriptors", "grover-embedding"), os.path.join(self.output_dir, "descriptors", "grover-embedding"))
-        done = ["grover-embedding"]
-    
         precalc_descs = [os.path.basename(desc_path) for desc_path in list(glob.glob(os.path.join(self.precalc_path, "descriptors", "*")))]        
-        #raw descriptors
+        
+        done = []
         with open(os.path.join(self.model_dir, "descriptors", "done_eos.json"), "r") as calculated_desc_file:
-            parameters = json.load(calculated_desc_file)
-            for desc in parameters:
-                if desc in precalc_descs and desc != "grover-embedding":
+            desc_list = json.load(calculated_desc_file)
+            for desc in desc_list:
+                if desc in precalc_descs:
                     shutil.copytree(os.path.join(self.precalc_path, "descriptors", desc), os.path.join(self.output_dir, "descriptors", desc))
                     done.append(desc)
-                elif desc != "grover-embedding":
+                else:
                     #make folder and run ersilia model
                     with ErsiliaModel(desc) as em_api:
                         os.makedirs(os.path.join(self.output_dir, "descriptors", desc))
                         em_api.api(input=self.input_file, output=os.path.join(self.output_dir, "descriptors", desc, "raw.h5"))
                         done.append(desc)
-        
-        #copy remaining manifolds, ersilia compound embeddings
-        for f in ["eosce.h5", "bidd_molmap_desc.np", "bidd_molmap_fps.np"]:
-            shutil.copy(os.path.join(self.precalc_path, "descriptors", f), os.path.join(self.output_dir, "descriptors"))
-        
+
         #update json descriptor file
         with open(os.path.join(self.output_dir, "descriptors", "done_eos.json"), "w") as done_file:
             json.dump(done, done_file)
@@ -139,4 +108,3 @@ def HiddenPrints():
                 yield (err, out)
             finally:
                 warnings.simplefilter('default')
-            

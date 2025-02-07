@@ -2,8 +2,8 @@
 
 import os
 import shutil
+import glob
 from typing import Any, Callable
-from olinda.utils.utils import get_workspace_path
 from olinda.utils.zairachem.zairachem import ZairaChemPredictor
    
 def run_zairachem(model_path: str) -> Callable:
@@ -17,10 +17,9 @@ def run_zairachem(model_path: str) -> Callable:
     """
 
     def execute(smiles_path: str) -> list:
-        model_output = os.path.join(get_workspace_path(), "zairachem_output_dir")
-        if os.path.exists(model_output):
-            shutil.rmtree(model_output)
-    
+        folds_exist = [file for file in glob.glob(os.path.join(model_path, "distill", "*")) if "fold" in file]
+        model_output = os.path.join(model_path, "distill", "fold" + str(len(folds_exist)+1))
+
         zp = ZairaChemPredictor(smiles_path, model_path, model_output)
         return zp.predict()
     return execute    

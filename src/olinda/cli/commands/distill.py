@@ -1,4 +1,5 @@
 import click
+import os
 
 from . import olinda_cli
 from ...distillation import Distiller
@@ -15,4 +16,9 @@ def distill_cmd():
         else:
             d = Distiller()
         student_model = d.distill(model)
+
+        if model is None:
+            output_path = os.path.join(model, "distill", "distilled_model.onnx")
+        if not os.path.exists(os.path.dirname(output_path)):
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
         student_model.save(output_path)

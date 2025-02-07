@@ -308,7 +308,6 @@ def gen_model_output(
 
     os.makedirs(os.path.join(working_dir, model.name), exist_ok=True)
     if clean is True:
-        clean_workspace(Path(working_dir), model=model)
         featurized_smiles_dl = featurized_smiles_dm.train_dataloader()
     else:
         try:
@@ -339,21 +338,23 @@ def gen_model_output(
     ) as output_stream:
     
         if model.type == "zairachem":
-            from loguru import logger
-            output = pd.DataFrame(columns = ["smiles", 'pred'])
-            for i in range(math.ceil(ref_size/50000)):
-                logger.info("Getting ZairaChem predictions for fold " + str(i+1) + " of " + str(math.ceil(ref_size/50000)))
-                folder = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k")
-                smiles_input_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", folder, "reference_library.csv")
-                preds = model(smiles_input_path)
-                output = pd.concat([output, preds])    
-            output = output[["smiles", "pred"]]   
-             
-            # save to zairachem model folder
             zaira_distill_path = os.path.join(model.name[len(model.type)+1:], "distill") #get model root
-            if os.path.exists(zaira_distill_path) == False:
-                os.mkdir(zaira_distill_path)
-            output.to_csv(os.path.join(zaira_distill_path, "reference_predictions.csv"), index=False)
+            output = None
+            if os.path.exists(os.path.join(zaira_distill_path, "reference_predictions.csv")): #check if predictions already calculated
+                output = pd.read_csv(os.path.join(zaira_distill_path, "reference_predictions.csv"))            
+            else:  
+                from loguru import logger
+                output = pd.DataFrame(columns = ["smiles", 'pred'])
+                for i in range(math.ceil(ref_size/50000)):
+                    logger.info("Getting ZairaChem predictions for fold " + str(i+1) + " of " + str(math.ceil(ref_size/50000)))
+                    folder = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k")
+                    smiles_input_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", folder, "reference_library.csv")
+                    preds = model(smiles_input_path)
+                    output = pd.concat([output, preds])    
+                output = output[["smiles", "pred"]]   
+             
+                # save to zairachem model folder
+                output.to_csv(os.path.join(zaira_distill_path, "reference_predictions.csv"), index=False)
             
             # correct wrong zairachem predictions before training Olinda
             training_output = model.get_training_preds()
@@ -372,16 +373,21 @@ def gen_model_output(
             # inverse of ratio of predicted active to inactive 
             y_bin_train = [1 if val > 0.5 else 0 for val in training_output["pred"]]
             y_bin_ref = [1 if val > 0.5 else 0 for val in output["pred"]]
-            active_weight = (y_bin_train.count(0) + y_bin_ref.count(0)) / (y_bin_train.count(1) + y_bin_ref.count(1))
+            active_weight = (y_bin_train.count(0) + y_bin_ref.count(0)) / (y_bin_train.count(1) + y_bin_ref.count(1)) #inactive to active ratio
             
             print("Creating model prediction files")
+            output_list = []
             train_counter = 0
             morganFeat = MorganFeaturizer()
             for i, row in training_output.dropna().iterrows():
                 fp = morganFeat.featurize([row["smiles"]])
                 if fp is None:
                     continue
-                weight = active_weight
+                if row["pred"] > 0.5:
+                    weight = active_weight
+                else:
+                    weight = 1/active_weight
+                output_list.append([row["smiles"], row["pred"], weight])
                 dump((i, row["smiles"], fp[0].tolist(), [row["pred"]], [weight]), output_stream)
                 train_counter += 1        
             
@@ -407,25 +413,26 @@ def gen_model_output(
                         if pred_val > 0.5:
                             weight = active_weight
                         else:
-                            weight = 1
+                            weight = 1/active_weight
+                        output_list.append([elem, pred_val, weight])
                         dump((j, elem, batch[2][j], [pred_val], [weight]), output_stream)
                         ref_counter += 1
                 
             elif model.type == "ersilia":
                 output = model(batch[1])
                 for j, elem in enumerate(batch[1]):
+                    output_list.append([elem, output[j].tolist(), 1])
                     dump((j, elem, batch[2][j], [output[j].tolist()]), output_stream)
 
             else:
             	output = model(torch.tensor(batch[2]))
             	for j, elem in enumerate(batch[1]):
+            	    output_list.append(elem, output[j].tolist(), 1)
             	    dump((j, elem, batch[2][j], output[j].tolist()), output_stream)
 
-        # Remove zairachem folder
-        if os.path.exists(os.path.join(get_workspace_path(), "zairachem_output_dir")):
-            shutil.rmtree(os.path.join(get_workspace_path(), "zairachem_output_dir"))
-
     if model.type == "zairachem":
+        output_df = pd.DataFrame(output_list, columns=["smiles", "prediction", "weight"])
+        output_df.to_csv(os.path.join(zaira_distill_path, "full_training_set.csv"))
         model_output_dm = GenericOutputDM(Path(working_dir / (model.name)), zaira_training_size = training_output.shape[0])
     else:
         model_output_dm = GenericOutputDM(Path(working_dir / (model.name)))   
@@ -455,7 +462,7 @@ def convert_to_onnx(
 
 
 def clean_workspace(
-    working_dir: Path, model: GenericModel = None, featurizer: Featurizer = None, reference: bool = False
+    working_dir: Path, featurizer: Featurizer = None, reference: bool = False
 ) -> None:
     """Clean workspace.
 
@@ -468,10 +475,6 @@ def clean_workspace(
     curr_ref_smiles_path = Path(working_dir) / "reference" / "reference_smiles.csv"
     orig_ref_smiles_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_library.csv")
     
-    if model:
-        shutil.rmtree(Path(working_dir) / (model.name), ignore_errors=True)
-        os.makedirs(Path(working_dir) / (model.name), exist_ok=True)
-
     if featurizer and os.path.exists(Path(working_dir) / "reference" / "reference_smiles_dl.joblib"):
         os.remove(Path(working_dir) / "reference" / "reference_smiles_dl.joblib")
         os.remove(Path(working_dir) / "reference" / f"featurized_smiles_{type(featurizer).__name__.lower()}.cbor"

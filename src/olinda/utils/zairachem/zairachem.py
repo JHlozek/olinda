@@ -35,7 +35,6 @@ class ZairaChemPredictor(object):
                 bar.next()
 
                 self.precalc_descriptors()
-                subprocess.run(["conda", "run", "-n", "zairadescribe", "python", os.path.join(ZAIRACHEM_PATH, "02_describe/zairadescribe/run.py")])
                 bar.next()
                
                 subprocess.run(["conda", "run", "-n", "zairatreat", "python", os.path.join(ZAIRACHEM_PATH, "03_treat/zairatreat/run.py")])
@@ -50,7 +49,7 @@ class ZairaChemPredictor(object):
                 subprocess.run(["conda", "run", "-n", "zairareport", "python", os.path.join(ZAIRACHEM_PATH, "06_report/zairareport/run.py")])
                 bar.next()
 
-                subprocess.run(["conda", "run", "-n", "zairafinish", "python", os.path.join(ZAIRACHEM_PATH, "07_finish/zairafinish/run.py")])
+                subprocess.run(["conda", "run", "-n", "zairafinish", "python", os.path.join(ZAIRACHEM_PATH, "07_finish/zairafinish/run.py"), "--clean", "True"])
                 bar.next()
             
         return self.clean_output(self.output_dir)

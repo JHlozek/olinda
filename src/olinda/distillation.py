@@ -4,9 +4,11 @@ from warnings import filterwarnings
 filterwarnings(action="ignore")
 
 import os
+import glob
 from pathlib import Path
 import shutil
 import math
+import json
 from typing import Any, Optional
 
 from cbor2 import dump
@@ -30,7 +32,7 @@ from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid
 from olinda.generic_model import GenericModel
 from olinda.tuner import ModelTuner, KerasTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
-from olinda.utils.s3 import ProgressPercentage
+from olinda.utils.s3 import download_s3_folder
 
 ### TODO: Improve object-oriented setup of distillation code segments
 class Distiller(object):
@@ -93,7 +95,10 @@ class Distiller(object):
             if self.num_data > ref_data:
                 self.num_data = ref_data  
             zairachem_folds = math.ceil(self.num_data / 50000)
-            fetch_descriptors(zairachem_folds)
+            zaira_describe_path = os.path.join(model.name[len(model.type)+1:], "descriptors")
+            with open(os.path.join(zaira_describe_path, "done_eos.json")) as used_desc_file:
+                req_descs = json.load(used_desc_file)
+            fetch_descriptors(zairachem_folds, req_descs)
             
             self.featurized_smiles_dm = gen_featurized_smiles(self.reference_smiles_dm, self.featurizer, self.working_dir, num_data=self.num_data, clean=self.clean)
             self.featurized_smiles_dm.setup("train")       
@@ -144,7 +149,8 @@ def fetch_ref_library():
                 )
 
 def fetch_descriptors(
-    num_folds: int
+    num_folds: int,
+    req_descs: list,
     ):
     """Check if required precalculated descriptor folds are on disk and fetch missing folds 
     
@@ -155,24 +161,26 @@ def fetch_descriptors(
     s3 = boto3.resource('s3', config=Config(signature_version=UNSIGNED))
     bucket = s3.Bucket('olinda')
     
-    path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors")
+    local_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors")
     
     for i in range(num_folds):
         fold = "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k"
-        dest = os.path.join(path, fold)
-        fold_zip = fold + ".zip"
-        dest_zip = dest + ".zip"
+        if not os.path.exists(os.path.join(local_path, fold)):
+            print("Downloading precalculated descriptors: fold " + str(i+1) + " of " + str(num_folds))
+            # download compound lists and mapping
+            s3_fold_data = os.path.join(fold, "data")
+            local_fold_data = os.path.join(local_path, fold, "data")
+            download_s3_folder("olinda", s3_fold_data, local_fold_data)
+            bucket.download_file(os.path.join(fold, "reference_library.csv"), os.path.join(local_path, fold, "reference_library.csv"))
         
-        if os.path.exists(dest) == False:
-            print("Downloading precalculated descriptors: fold " + str(i+1))
-            bucket.download_file(
-                fold_zip, dest_zip,
-                Callback=ProgressPercentage(bucket, fold_zip)
-                )
-            with zipfile.ZipFile(dest_zip, 'r') as zip_ref:
-                zip_ref.extractall(path)
-            assert os.path.exists(dest)
-            os.remove(dest_zip)
+        # download raw descriptor files
+        for desc in req_descs:
+            s3_path = os.path.join(fold, "descriptors", desc)
+            dest_path = os.path.join(local_path, fold, "descriptors", desc)
+        
+            if not os.path.exists(dest_path):
+                download_s3_folder("olinda", s3_path, dest_path)
+                assert os.path.exists(dest_path)
 
 def gen_training_dataset(
     model: pl.LightningModule,
@@ -331,10 +339,13 @@ def gen_model_output(
         ) as output_stream:
             stop_step = calculate_cbor_size(output_stream)
     except Exception:
-        stop_step = 0
-    
+        with open(Path(working_dir) / (model.name) / "model_output.cbor",
+            "wb",
+        ) as output_stream:
+            stop_step = 0
+
     with open(
-        Path(working_dir) / (model.name) / "model_output.cbor", "wb"
+        Path(working_dir) / (model.name) / "model_output.cbor", "ab"
     ) as output_stream:
     
         if model.type == "zairachem":
@@ -342,7 +353,11 @@ def gen_model_output(
             output = None
             if os.path.exists(os.path.join(zaira_distill_path, "reference_predictions.csv")): #check if predictions already calculated
                 output = pd.read_csv(os.path.join(zaira_distill_path, "reference_predictions.csv"))            
-            else:  
+            else:
+                if len(glob.glob(os.path.join(zaira_distill_path, "*"))) > 0: # clear dir if distillation did not finish correctly
+                    shutil.rmtree(zaira_distill_path)
+                    os.mkdir(zaira_distill_path)
+
                 from loguru import logger
                 output = pd.DataFrame(columns = ["smiles", 'pred'])
                 for i in range(math.ceil(ref_size/50000)):
@@ -388,8 +403,11 @@ def gen_model_output(
                 else:
                     weight = 1/active_weight
                 output_list.append([row["smiles"], row["pred"], weight])
-                dump((i, row["smiles"], fp[0].tolist(), [row["pred"]], [weight]), output_stream)
-                train_counter += 1        
+                train_counter += 1
+                if i > stop_step:
+                    dump((i, row["smiles"], fp[0].tolist(), [row["pred"]], [weight]), output_stream)
+            output_df = pd.DataFrame(output_list, columns=["smiles", "prediction", "weight"])
+            output_df.to_csv(os.path.join(zaira_distill_path, "original_training_set.csv"), index=False)
             
         ref_counter = 0        
         for i, batch in tqdm(
@@ -397,14 +415,10 @@ def gen_model_output(
             total=featurized_smiles_dl.length,
             desc="Creating model output",
         ):
-            if i < stop_step // len(batch[0]):
-                continue
-
             if model.type == "zairachem":
                 # final dataset a multiple of batch
                 combined_count = train_counter + featurized_smiles_dl.length*len(batch[0])
                 target_count = combined_count // len(batch[0]) * len(batch[0]) 
-                
                 for j, elem in enumerate(batch[1]):
                     if ref_counter + train_counter == target_count:
                         break
@@ -415,24 +429,23 @@ def gen_model_output(
                         else:
                             weight = 1/active_weight
                         output_list.append([elem, pred_val, weight])
-                        dump((j, elem, batch[2][j], [pred_val], [weight]), output_stream)
                         ref_counter += 1
+                        if ref_counter + train_counter > stop_step:
+                            dump((j, elem, batch[2][j], [pred_val], [weight]), output_stream)   
                 
             elif model.type == "ersilia":
                 output = model(batch[1])
                 for j, elem in enumerate(batch[1]):
-                    output_list.append([elem, output[j].tolist(), 1])
                     dump((j, elem, batch[2][j], [output[j].tolist()]), output_stream)
 
             else:
             	output = model(torch.tensor(batch[2]))
             	for j, elem in enumerate(batch[1]):
-            	    output_list.append(elem, output[j].tolist(), 1)
             	    dump((j, elem, batch[2][j], output[j].tolist()), output_stream)
 
     if model.type == "zairachem":
         output_df = pd.DataFrame(output_list, columns=["smiles", "prediction", "weight"])
-        output_df.to_csv(os.path.join(zaira_distill_path, "full_training_set.csv"))
+        output_df.to_csv(os.path.join(zaira_distill_path, "full_training_set.csv"), index=False)
         model_output_dm = GenericOutputDM(Path(working_dir / (model.name)), zaira_training_size = training_output.shape[0])
     else:
         model_output_dm = GenericOutputDM(Path(working_dir / (model.name)))   

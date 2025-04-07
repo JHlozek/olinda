@@ -399,9 +399,10 @@ def gen_model_output(
                 if fp is None:
                     continue
                 if row["pred"] > 0.5:
-                    weight = active_weight
+                    weight = min(active_weight, 100) #prevent extreme weighting
                 else:
-                    weight = 1/active_weight
+                    weight = max(1/active_weight, 0.01)
+                
                 output_list.append([row["smiles"], row["pred"], weight])
                 train_counter += 1
                 if i > stop_step:

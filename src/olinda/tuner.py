@@ -13,7 +13,22 @@ import kerastuner as kt
 import tensorflow as tf
 from tensorflow import keras
 
-from olinda.data import GenericOutputDM, TensorflowDatasetWrapper
+from torch.utils.data import DataLoader
+from lightning import pytorch as pl
+from chemprop.data.collate import collate_batch
+from chemprop.nn import BondMessagePassing, NormAggregation, RegressionFFN, metrics
+from chemprop import models
+
+import ray
+from ray import tune
+from ray.train import CheckpointConfig, RunConfig, ScalingConfig
+from ray.train.lightning import (RayDDPStrategy, RayLightningEnvironment,
+                                 RayTrainReportCallback, prepare_trainer)
+from ray.train.torch import TorchTrainer
+from ray.tune.search.hyperopt import HyperOptSearch
+from ray.tune.schedulers import FIFOScheduler
+
+from olinda.data import GenericOutputDM, TensorflowDatasetWrapper, ChempropDataset
 from olinda.generic_model import GenericModel
 
 # overwrite checkpoint functionality
@@ -41,6 +56,153 @@ class ModelTuner(ABC):
         """
         pass
 
+class ChempropTuner(ModelTuner):
+    """ChemProp based model tuner."""
+
+    def __init__(self: "ChempropTuner") -> None:
+        """Initialize model tuner.
+
+        Args:
+        """
+        pass
+
+    def fit(self: "ChempropTuner", datamodule: GenericOutputDM) -> GenericModel:
+        """Fit an optimal model using the given dataset.
+
+        Args:
+            datamodule (GenericOutputDM): Datamodule to fit an optimal model.
+
+        Returns:
+            GenericModel : Student model as wrapped in a generic model class.
+        """
+        self.datamodule = datamodule
+        #self.search_datamodule = copy.deepcopy(self.datamodule)
+        #train_search_dataset = 
+        #val_search_dataset = 
+
+        train_dataset = ChempropDataset(self.datamodule, "train").dataset
+        val_dataset = ChempropDataset(self.datamodule, "val").dataset
+        train_dataloader = DataLoader(dataset=train_dataset, batch_size=32, shuffle=True, collate_fn=collate_batch, num_workers=4)
+        val_dataloader = DataLoader(dataset=val_dataset, batch_size=32, shuffle=False, collate_fn=collate_batch, num_workers=4)
+        
+        self.hyperparameter_search(train_dataloader, val_dataloader)
+        return self.final_train(train_dataloader, val_dataloader)
+
+    def _build_model(self: "ChempropTuner", config: dict):
+        """Build MPNN model with specified hyperparameters.
+
+        Args:
+            config (dict): Dictionary containing hyperparameters for current trial.
+        """
+
+        depth = int(config["depth"])
+        ffn_hidden_dim = int(config["ffn_hidden_dim"])
+        ffn_num_layers = int(config["ffn_num_layers"])
+        message_hidden_dim = int(config["message_hidden_dim"])
+
+        mp = nn.BondMessagePassing(d_h=message_hidden_dim, depth=depth)
+        agg = NormAggregation()
+        ffn = nn.RegressionFFN(output_transform=output_transform, input_dim=message_hidden_dim, hidden_dim=ffn_hidden_dim, n_layers=ffn_num_layers)
+        metric_list = [metrics.RMSE(), metrics.MAE()]
+        model = models.MPNN(mp, agg, ffn, batch_norm=True, metrics=metric_list)
+        return model
+
+    def _train_trial_model(self: "ChempropTuner", config: dict, train_dataloader: DataLoader, val_dataloader: DataLoader):
+        """Train iteration of model during hyperparameter optimization.
+
+        Args:
+            config (dict): Dictionary containing hyperparameters for current trial.
+            train_dataloader (DataLoader): PyTorch DataLoader for training data.
+            val_dataloader (DataLoader): PyTorch DataLoader for validation data.
+        """
+        model = self._build_model(config)
+        trainer = pl.Trainer(
+            accelerator="auto",
+            devices=1,
+            max_epochs=3, # number of epochs to train for
+            # below are needed for Ray and Lightning integration
+            strategy=RayDDPStrategy(),
+            callbacks=[RayTrainReportCallback()],
+            plugins=[RayLightningEnvironment()],
+        )
+
+        trainer = prepare_trainer(trainer)
+        trainer.fit(model, train_loader, val_loader)
+
+    def hyperparameter_search(self: "ChempropTuner", train_dataloader: DataLoader, val_dataloader: DataLoader):
+        """Train iteration of model during hyperparameter optimization.
+
+        Args:
+            train_dataloader (DataLoader): PyTorch DataLoader for training data.
+            val_dataloader (DataLoader): PyTorch DataLoader for validation data.
+        """
+        search_space = {
+            "depth": tune.qrandint(lower=2, upper=6, q=1),
+            "ffn_hidden_dim": tune.qrandint(lower=300, upper=2400, q=100),
+            "ffn_num_layers": tune.qrandint(lower=1, upper=3, q=1),
+            "message_hidden_dim": tune.qrandint(lower=300, upper=2400, q=100),
+        }
+
+        ray.init()
+        scheduler = FIFOScheduler()
+
+        # Scaling config controls the resources used by Ray
+        scaling_config = ScalingConfig(
+            num_workers=1,
+            use_gpu=False, # change to True if you want to use GPU
+        )
+
+        # Checkpoint config controls the checkpointing behavior of Ray
+        checkpoint_config = CheckpointConfig(
+            num_to_keep=1, # number of checkpoints to keep
+            checkpoint_score_attribute="val_loss", # Save the checkpoint based on this metric
+            checkpoint_score_order="min", # Save the checkpoint with the lowest metric value
+        )
+        run_config = RunConfig(
+            checkpoint_config=checkpoint_config,
+            storage_path=hpopt_save_dir / "ray_results", # directory to save the results
+        )
+        ray_trainer = TorchTrainer(
+            lambda config: self.train_trial_model(config, train_dataloader, val_dataloader),
+            scaling_config=scaling_config,
+            run_config=run_config,
+        )
+        search_alg = HyperOptSearch(
+            n_initial_points=1, # number of random evaluations before tree parzen estimators
+            random_state_seed=42,
+        )
+        
+        self.hyper_results = tuner.fit()
+
+    def final_train(self: "ChempropTuner", train_dataloader: DataLoader, val_dataloader: DataLoader):
+        """Train optimized model.
+
+        Args:
+            train_dataloader (DataLoader): PyTorch DataLoader for training data.
+            val_dataloader (DataLoader): PyTorch DataLoader for validation data.
+        """
+        best_result = results.get_best_result()
+        best_config = best_result.config
+        print("Best hyperparameters:\n" + best_config['train_loop_config'])
+
+        self.final_model = self._build_model(best_config)
+        """
+        mp = BondMessagePassing()
+        agg = NormAggregation()
+        ffn = RegressionFFN()
+        metric_list = [metrics.RMSE(), metrics.MAE()]
+        self.final_model = models.MPNN(mp, agg, ffn, batch_norm=True, metrics=metric_list)
+        """
+        trainer = pl.Trainer(
+            logger=False,
+            enable_checkpointing=False,  # Use `True` if you want to save model checkpoints. The checkpoints will be saved in the `checkpoints` folder.
+            enable_progress_bar=True,
+            accelerator="auto",
+            devices=1,
+            max_epochs=30,  # number of epochs to train for
+        )
+        trainer.fit(self.final_model, train_dataloader, val_dataloader)
+        return GenericModel(self.final_model)
 
 class AutoKerasTuner(ModelTuner):
     """AutoKeras based model tuner."""

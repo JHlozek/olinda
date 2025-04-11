@@ -9,7 +9,7 @@ It can automatically distill models from Pytorch, Tensorflow, ONNX amd ZairaChem
 Create a conda environment
 
 ```bash
-conda create -n olinda python=3.10
+conda create -n olinda python=3.11
 conda activate olinda
 ```
 

@@ -30,7 +30,7 @@ import pandas as pd
 from olinda.data import ReferenceSmilesDM, FeaturizedSmilesDM, GenericOutputDM
 from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid
 from olinda.generic_model import GenericModel
-from olinda.tuner import ModelTuner, KerasTuner
+from olinda.tuner import ModelTuner, KerasTuner, ChempropTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
 from olinda.utils.s3 import download_s3_folder
 
@@ -38,7 +38,7 @@ from olinda.utils.s3 import download_s3_folder
 class Distiller(object):
     def __init__(self,
         featurizer: Optional[Featurizer] = MorganFeaturizer(),
-        tuner: ModelTuner = KerasTuner(),
+        tuner: ModelTuner = ChempropTuner(), #KerasTuner(),
         reference_smiles_dm: Optional[ReferenceSmilesDM] = None,
         featurized_smiles_dm: Optional[FeaturizedSmilesDM] = None,
         generic_output_dm: Optional[GenericOutputDM] = None,
@@ -126,9 +126,10 @@ class Distiller(object):
         
         # Select and Train student model
         student_model = self.tuner.fit(student_training_dm)
-        model_onnx = convert_to_onnx(student_model, self.featurizer)
+        #model_onnx = convert_to_onnx(student_model, self.featurizer)
     
-        return model_onnx
+        #return model_onnx
+        return student_model
 
 def fetch_ref_library():
     s3 = boto3.resource('s3', config=Config(signature_version=UNSIGNED))
@@ -469,9 +470,14 @@ def convert_to_onnx(
     
     example = featurizer.featurize(["CCCOC"])
     
-    spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
-    model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
-    model_onnx = GenericModel(model_onnx)
+    if model.type == "tensorflow":
+        spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
+        model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
+        model_onnx = GenericModel(model_onnx)
+    elif model.type == "pytorch":
+        example_inputs = torch.from_numpy(example)
+        model_onnx = torch.onnx.export(model, example_inputs, dynamo=True)
+        model_onnx = GenericModel(model_onnx)
     return model_onnx
 
 

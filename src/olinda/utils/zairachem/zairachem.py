@@ -2,7 +2,7 @@
 ZAIRACHEM_PATH = "/home/Jason/code/zairachem-docker"
 
 #import zairachem
-import ersilia
+import ersilia #Remove ersilia dependency once descriptors have been fixed
 from ersilia import ErsiliaModel
 
 import pandas as pd

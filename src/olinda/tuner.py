@@ -13,7 +13,9 @@ import kerastuner as kt
 import tensorflow as tf
 from tensorflow import keras
 
-from olinda.data import GenericOutputDM, TensorflowDatasetWrapper
+from catboost import CatBoostRegressor, Pool
+
+from olinda.data import GenericOutputDM, CatboostDataset, TensorflowDatasetWrapper
 from olinda.generic_model import GenericModel
 
 # overwrite checkpoint functionality
@@ -80,6 +82,41 @@ class AutoKerasTuner(ModelTuner):
         )
         self.mdl.fit(self.dataset)
         return GenericModel(self.mdl.export_model())
+
+class CatboostTuner(ModelTuner):
+    """CatBoost based model tuner."""
+
+    def __init__(
+        self: "CatboostTuner",
+    ) -> None:
+        """Initialize model tuner.
+
+        Args:
+            
+        """
+        self.iterations = 100
+
+    def fit(self: "CatboostTuner", datamodule: GenericOutputDM) -> GenericModel:
+        """Fit an optimal model using the given dataset.
+
+        Args:
+            datamodule (GenericOutputDM): Datamodule to fit an optimal model.
+
+        Returns:
+            GenericModel : Student model as wrapped in a generic model class.
+        """
+        
+        self.datamodule = datamodule
+        train_dataset = CatboostDataset(self.datamodule, "train").dataset
+        val_dataset = CatboostDataset(self.datamodule, "val").dataset
+      
+        self._final_train(train_dataset, val_dataset)
+        
+    def _final_train(self: "CatboostTuner", train_dataset: CatboostDataset, val_dataset: CatboostDataset):
+        train_pool = Pool(data=train_dataset.X, label=train_dataset.y, weight=train_dataset.weights)
+        model = CatBoostRegressor(iterations=self.iterations)
+        model.fit(train_pool)
+        return GenericModel(model)
 
 
 class KerasTuner(ModelTuner):

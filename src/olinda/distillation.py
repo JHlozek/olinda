@@ -4,6 +4,7 @@ from warnings import filterwarnings
 filterwarnings(action="ignore")
 
 import os
+import io
 import glob
 from pathlib import Path
 import shutil
@@ -27,10 +28,12 @@ import tf2onnx
 import onnx
 import pandas as pd
 
+from catboost import Pool
+
 from olinda.data import ReferenceSmilesDM, FeaturizedSmilesDM, GenericOutputDM
 from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid
 from olinda.generic_model import GenericModel
-from olinda.tuner import ModelTuner, KerasTuner
+from olinda.tuner import ModelTuner, CatboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
 from olinda.utils.s3 import download_s3_folder
 
@@ -38,7 +41,7 @@ from olinda.utils.s3 import download_s3_folder
 class Distiller(object):
     def __init__(self,
         featurizer: Optional[Featurizer] = MorganFeaturizer(),
-        tuner: ModelTuner = KerasTuner(),
+        tuner: ModelTuner = CatboostTuner(),
         reference_smiles_dm: Optional[ReferenceSmilesDM] = None,
         featurized_smiles_dm: Optional[FeaturizedSmilesDM] = None,
         generic_output_dm: Optional[GenericOutputDM] = None,
@@ -469,8 +472,21 @@ def convert_to_onnx(
     
     example = featurizer.featurize(["CCCOC"])
     
-    spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
-    model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
+    if model.type == "tensorflow":
+        spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
+        model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
+    elif model.type == "catboost":
+        #Make train_pool
+        train_pool = Pool(data=X, label=y, weight=weights)
+
+        onnx_buffer = io.BytesIO()
+        model.save_model(
+        fname=onnx_buffer,
+        format='onnx',
+        export_parameters={'onnx_domain': 'ai.catboost', 'onnx_model_version': 1},
+        pool=train_pool
+        )
+
     model_onnx = GenericModel(model_onnx)
     return model_onnx
 

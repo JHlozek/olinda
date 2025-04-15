@@ -138,9 +138,9 @@ class ChempropTuner(ModelTuner):
         """
         search_space = {
             "depth": tune.qrandint(lower=2, upper=6, q=1),
-            "ffn_hidden_dim": tune.qrandint(lower=300, upper=2400, q=100),
+            "ffn_hidden_dim": tune.qrandint(lower=100, upper=1000, q=100),
             "ffn_num_layers": tune.qrandint(lower=1, upper=3, q=1),
-            "message_hidden_dim": tune.qrandint(lower=300, upper=2400, q=100),
+            "message_hidden_dim": tune.qrandint(lower=100, upper=1000, q=100),
         }
         ray.init(ignore_reinit_error=True)
         scheduler = FIFOScheduler()
@@ -174,7 +174,7 @@ class ChempropTuner(ModelTuner):
         tune_config = tune.TuneConfig(
             metric="val_loss",
             mode="min",
-            num_samples=2, # number of trials to run
+            num_samples=10, # number of trials to run
             scheduler=scheduler,
             search_alg=search_alg,
             trial_dirname_creator=lambda trial: str(trial.trial_id), # shorten filepaths
@@ -200,15 +200,16 @@ class ChempropTuner(ModelTuner):
         best_config = best_result.config
         print("Best hyperparameters:")
         print(best_config['train_loop_config'])
+        
+        if best_config is not None:
+            self.final_model = self._build_model(best_config['train_loop_config'])
+        else:
+            mp = BondMessagePassing()
+            agg = NormAggregation()
+            ffn = RegressionFFN()
+            metric_list = [metrics.RMSE(), metrics.MAE()]
+            self.final_model = models.MPNN(mp, agg, ffn, batch_norm=True, metrics=metric_list)
 
-        self.final_model = self._build_model(best_config)
-        """
-        mp = BondMessagePassing()
-        agg = NormAggregation()
-        ffn = RegressionFFN()
-        metric_list = [metrics.RMSE(), metrics.MAE()]
-        self.final_model = models.MPNN(mp, agg, ffn, batch_norm=True, metrics=metric_list)
-        """
         trainer = pl.Trainer(
             logger=False,
             enable_checkpointing=False,  # Use `True` if you want to save model checkpoints. The checkpoints will be saved in the `checkpoints` folder.

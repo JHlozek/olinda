@@ -39,6 +39,7 @@ protobuf = "=3.20.3"
 onnx_runner = {path = "./onnx_runner"}
 chemprop = "2.1.2"
 ray[tune] = ">=2.44.1"
+hyperopt = ">=0.2.7"
 
 
 [tool.poetry.dev-dependencies]

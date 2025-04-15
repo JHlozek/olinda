@@ -100,9 +100,9 @@ class ChempropTuner(ModelTuner):
         ffn_num_layers = int(config["ffn_num_layers"])
         message_hidden_dim = int(config["message_hidden_dim"])
 
-        mp = nn.BondMessagePassing(d_h=message_hidden_dim, depth=depth)
+        mp = BondMessagePassing(d_h=message_hidden_dim, depth=depth)
         agg = NormAggregation()
-        ffn = nn.RegressionFFN(output_transform=output_transform, input_dim=message_hidden_dim, hidden_dim=ffn_hidden_dim, n_layers=ffn_num_layers)
+        ffn = RegressionFFN(input_dim=message_hidden_dim, hidden_dim=ffn_hidden_dim, n_layers=ffn_num_layers)
         metric_list = [metrics.RMSE(), metrics.MAE()]
         model = models.MPNN(mp, agg, ffn, batch_norm=True, metrics=metric_list)
         return model
@@ -127,7 +127,7 @@ class ChempropTuner(ModelTuner):
         )
 
         trainer = prepare_trainer(trainer)
-        trainer.fit(model, train_loader, val_loader)
+        trainer.fit(model, train_dataloader, val_dataloader)
 
     def hyperparameter_search(self: "ChempropTuner", train_dataloader: DataLoader, val_dataloader: DataLoader):
         """Train iteration of model during hyperparameter optimization.
@@ -142,8 +142,7 @@ class ChempropTuner(ModelTuner):
             "ffn_num_layers": tune.qrandint(lower=1, upper=3, q=1),
             "message_hidden_dim": tune.qrandint(lower=300, upper=2400, q=100),
         }
-
-        ray.init()
+        ray.init(ignore_reinit_error=True)
         scheduler = FIFOScheduler()
 
         # Scaling config controls the resources used by Ray
@@ -160,10 +159,10 @@ class ChempropTuner(ModelTuner):
         )
         run_config = RunConfig(
             checkpoint_config=checkpoint_config,
-            storage_path=hpopt_save_dir / "ray_results", # directory to save the results
+            #storage_path=hpopt_save_dir / "ray_results", # directory to save the results
         )
         ray_trainer = TorchTrainer(
-            lambda config: self.train_trial_model(config, train_dataloader, val_dataloader),
+            lambda config: self._train_trial_model(config, train_dataloader, val_dataloader),
             scaling_config=scaling_config,
             run_config=run_config,
         )
@@ -172,6 +171,22 @@ class ChempropTuner(ModelTuner):
             random_state_seed=42,
         )
         
+        tune_config = tune.TuneConfig(
+            metric="val_loss",
+            mode="min",
+            num_samples=2, # number of trials to run
+            scheduler=scheduler,
+            search_alg=search_alg,
+            trial_dirname_creator=lambda trial: str(trial.trial_id), # shorten filepaths
+        )
+
+        tuner = tune.Tuner(
+            ray_trainer,
+            param_space={
+                "train_loop_config": search_space,
+             },
+            tune_config=tune_config,
+        )
         self.hyper_results = tuner.fit()
 
     def final_train(self: "ChempropTuner", train_dataloader: DataLoader, val_dataloader: DataLoader):
@@ -181,9 +196,10 @@ class ChempropTuner(ModelTuner):
             train_dataloader (DataLoader): PyTorch DataLoader for training data.
             val_dataloader (DataLoader): PyTorch DataLoader for validation data.
         """
-        best_result = results.get_best_result()
+        best_result = self.hyper_results.get_best_result()
         best_config = best_result.config
-        print("Best hyperparameters:\n" + best_config['train_loop_config'])
+        print("Best hyperparameters:")
+        print(best_config['train_loop_config'])
 
         self.final_model = self._build_model(best_config)
         """

@@ -20,7 +20,7 @@ class ONNX_Runner(object):
         preds = []
         for i, smi in enumerate(smiles_list):
             if X[i] is not None:
-                pred = onnx_rt.run(output_names, {"input": [X[i]]})
+                pred = onnx_rt.run(output_names, {"features": [X[i]]})
                 preds.append(pred[0][0][0]) #remove tensorflow nesting
             else:
                 preds.append("")

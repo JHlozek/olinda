@@ -9,10 +9,9 @@ from rdkit.Chem import AllChem #deprecate
 NBITS = 1024
 RADIUS = 3
 
-class MorganFeaturizer(Featurizer):
+class MorganFeaturizer:
     def __init__(self: "MorganFeaturizer") -> None:
         self.name = "morganfeaturizer"
-        self.tf_dtype = tf.float32
         self.mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=RADIUS,fpSize=NBITS)
 
     def clip_sparse(self: "MorganFeaturizer", vect: List, nbits: int) -> List:

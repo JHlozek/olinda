@@ -37,6 +37,7 @@ class CatboostDataset:
         self.X, self.y, self.weights = [], [], []
         for sample in self.loader:
             self.X.append(sample[0])
-            self.y.append(sample[1])
-            self.weights.append(sample[2])
+            self.y.append(sample[1][0])
+            self.weights.append(sample[2][0])
+        
 

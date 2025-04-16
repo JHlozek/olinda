@@ -31,16 +31,16 @@ class GenericModel(DistillBaseModel):
             self.type = "pytorch"
             self.name = type(model).__name__.lower()
 
-        elif issubclass(type(model), (tf.keras.Model)):
-            self.nn = model
-            self.type = "tensorflow"
-            self.name = type(model).__name__.lower()
-
         elif issubclass(type(model), (CatBoostRegressor)):
             self.nn = model #update
             self.type = "catboost"
             self.name = type(model).__name__.lower()
-        
+
+        elif issubclass(type(model), (tf.keras.Model)):
+            self.nn = model
+            self.type = "tensorflow"
+            self.name = type(model).__name__.lower()
+       
         elif issubclass(type(model), (onnx.onnx_ml_pb2.ModelProto)):
             self.nn = run_onnx_runtime(model)
             self.type = "onnx"

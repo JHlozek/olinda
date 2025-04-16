@@ -14,6 +14,10 @@ import tensorflow as tf
 from tensorflow import keras
 
 from catboost import CatBoostRegressor, Pool
+import optuna
+from optuna.samplers import TPESampler
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.model_selection import train_test_split
 
 from olinda.data import GenericOutputDM, CatboostDataset, TensorflowDatasetWrapper
 from olinda.generic_model import GenericModel
@@ -96,27 +100,83 @@ class CatboostTuner(ModelTuner):
         """
         self.iterations = 100
 
-    def fit(self: "CatboostTuner", datamodule: GenericOutputDM) -> GenericModel:
+    def fit(self: "CatboostTuner", datamodule: GenericOutputDM, time_budget=1800) -> GenericModel:
         """Fit an optimal model using the given dataset.
 
         Args:
             datamodule (GenericOutputDM): Datamodule to fit an optimal model.
-
+            time_budget (int): Hyperparameter search time allowance
         Returns:
             GenericModel : Student model as wrapped in a generic model class.
         """
         
         self.datamodule = datamodule
-        train_dataset = CatboostDataset(self.datamodule, "train").dataset
-        val_dataset = CatboostDataset(self.datamodule, "val").dataset
-      
-        self._final_train(train_dataset, val_dataset)
+        train_dataset = CatboostDataset(self.datamodule, "train")
         
-    def _final_train(self: "CatboostTuner", train_dataset: CatboostDataset, val_dataset: CatboostDataset):
+        self._hyperparam_search(train_dataset)
+        self._final_train(train_dataset)
+        return GenericModel(self.model)
+    """
+    def find_GPUs(self):
+        GPUs = GPUtil.getGPUs()
+        if len(GPUs) > 0 and TRY_GPU:
+            return "GPU"
+        return "CPU"
+    """
+
+    def objective(self, trial):
+        X_train, X_test, y_train, y_test, weights_train, weights_test = train_test_split(
+            self.X, self.y, self.weights, test_size=0.2, random_state=42
+        )
+        dtrain = Pool(data=X_train, label=y_train, weight=weights_train)
+        dtest = Pool(data=X_test, label=y_test, weight=weights_test)
+        self.trial_params = {}
+        """
+        if self.device == "GPU":
+            # Optimize additional hyperparameters if on GPU
+            self.trial_params.update(
+                {
+                    "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 2, 20),
+                    "l2_leaf_reg": trial.suggest_loguniform("l2_leaf_reg", 1e-2, 1e0),
+                }
+            )
+        """
+        self.trial_params.update(
+            {
+                "learning_rate": trial.suggest_loguniform("learning_rate", 1e-4, 1e-1),
+                "depth": trial.suggest_int("depth", 4, 11),
+                "iterations": trial.suggest_int("iterations", 50, 500),
+                "bootstrap_type": trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli", "MVS"]),
+            }
+        )
+
+        reg = CatBoostRegressor(**self.trial_params)
+        reg.fit(dtrain, eval_set=dtest, early_stopping_rounds=100, verbose=0)
+        y_pred = reg.predict(X_test)
+        score = mean_absolute_error(y_test, y_pred)
+        return score
+
+    def _hyperparam_search(self: "CatboostTuner", train_dataset: CatboostDataset, time_budget=1800):
+        print("Starting hyperparameter search for", time_budget, "seconds.")
+
+        self.X = train_dataset.X
+        self.y = train_dataset.y
+        self.weights = train_dataset.weights
+
+        self.study = optuna.create_study(sampler=TPESampler(), direction="minimize")
+
+        self.study.optimize(self.objective, n_trials=500, timeout=time_budget)
+        self.best_params = self.study.best_trial.params
+        print("Best trial parameters:", self.best_params)
+       
+        
+    def _final_train(self: "CatboostTuner", train_dataset: CatboostDataset):
         train_pool = Pool(data=train_dataset.X, label=train_dataset.y, weight=train_dataset.weights)
-        model = CatBoostRegressor(iterations=self.iterations)
-        model.fit(train_pool)
-        return GenericModel(model)
+        if self.best_params is not None:
+            self.model = CatBoostRegressor(**self.best_params)
+        else:
+            self.model = CatBoostRegressor()
+        self.model.fit(train_pool)
 
 
 class KerasTuner(ModelTuner):

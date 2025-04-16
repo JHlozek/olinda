@@ -4,12 +4,12 @@ from warnings import filterwarnings
 filterwarnings(action="ignore")
 
 import os
-import io
 import glob
 from pathlib import Path
 import shutil
 import math
 import json
+import tempfile
 from typing import Any, Optional
 
 from cbor2 import dump
@@ -469,23 +469,23 @@ def convert_to_onnx(
     Returns:
         onnx.onnx_ml_pb2.ModelProto: ONNX formatted model
     """
-    
-    example = featurizer.featurize(["CCCOC"])
-    
+      
     if model.type == "tensorflow":
+        example = featurizer.featurize(["CCCOC"])
         spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
         model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
     elif model.type == "catboost":
-        #Make train_pool
-        train_pool = Pool(data=X, label=y, weight=weights)
-
-        onnx_buffer = io.BytesIO()
-        model.save_model(
-        fname=onnx_buffer,
-        format='onnx',
-        export_parameters={'onnx_domain': 'ai.catboost', 'onnx_model_version': 1},
-        pool=train_pool
-        )
+        with tempfile.NamedTemporaryFile(suffix=".onnx") as tmp:
+            model.nn.save_model(
+            tmp.name,
+            format='onnx',
+            )
+            model_onnx = onnx.load(tmp.name)
+            #define prediction output shape (1,1)
+            output = model_onnx.graph.output[0]
+            output.type.tensor_type.shape.dim.clear()
+            output.type.tensor_type.shape.dim.add().dim_value = 1  # batch size
+            output.type.tensor_type.shape.dim.add().dim_value = 1  # single output value
 
     model_onnx = GenericModel(model_onnx)
     return model_onnx

@@ -14,7 +14,7 @@ import torch
 
 from olinda.utils.utils import get_package_root_path
 
-NBITS = 1024
+NBITS = 2048
 RADIUS = 3
 
 class Featurizer(ABC):

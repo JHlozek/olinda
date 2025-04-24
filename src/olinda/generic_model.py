@@ -12,7 +12,7 @@ import pickle
 
 from olinda.models.base import DistillBaseModel
 from olinda.utils.utils import run_onnx_runtime
-from catboost import CatBoostRegressor
+import xgboost as xgb
 
 class GenericModel(DistillBaseModel):
     def __init__(self: "GenericModel", model: Any) -> None:
@@ -31,9 +31,9 @@ class GenericModel(DistillBaseModel):
             self.type = "pytorch"
             self.name = type(model).__name__.lower()
 
-        elif issubclass(type(model), (CatBoostRegressor)):
+        elif issubclass(type(model), (xgb.XGBRegressor)):
             self.nn = model #update
-            self.type = "catboost"
+            self.type = "xgboost"
             self.name = type(model).__name__.lower()
 
         elif issubclass(type(model), (tf.keras.Model)):

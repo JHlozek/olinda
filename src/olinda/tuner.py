@@ -13,13 +13,13 @@ import kerastuner as kt
 import tensorflow as tf
 from tensorflow import keras
 
-from catboost import CatBoostRegressor, Pool
+import xgboost as xgb
 import optuna
 from optuna.samplers import TPESampler
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 
-from olinda.data import GenericOutputDM, CatboostDataset, TensorflowDatasetWrapper
+from olinda.data import GenericOutputDM, XgboostDataset, TensorflowDatasetWrapper
 from olinda.generic_model import GenericModel
 
 # overwrite checkpoint functionality
@@ -87,33 +87,33 @@ class AutoKerasTuner(ModelTuner):
         self.mdl.fit(self.dataset)
         return GenericModel(self.mdl.export_model())
 
-class CatboostTuner(ModelTuner):
-    """CatBoost based model tuner."""
+class XgboostTuner(ModelTuner):
+    """XGBoost based model tuner."""
 
     def __init__(
-        self: "CatboostTuner",
+        self: "XgboostTuner",
     ) -> None:
         """Initialize model tuner.
 
         Args:
             
         """
-        self.iterations = 100
+        pass
 
-    def fit(self: "CatboostTuner", datamodule: GenericOutputDM, time_budget=1800) -> GenericModel:
+    def fit(self: "XgboostTuner", datamodule: GenericOutputDM, time_budget=1800) -> GenericModel:
         """Fit an optimal model using the given dataset.
 
         Args:
             datamodule (GenericOutputDM): Datamodule to fit an optimal model.
-            time_budget (int): Hyperparameter search time allowance
         Returns:
             GenericModel : Student model as wrapped in a generic model class.
+            time_budget (int): Hyperparameter search time allowance
         """
         
         self.datamodule = datamodule
-        train_dataset = CatboostDataset(self.datamodule, "train")
+        train_dataset = XgboostDataset(self.datamodule, "train")
         
-        self._hyperparam_search(train_dataset)
+        self._hyperparam_search(train_dataset, time_budget=time_budget)
         self._final_train(train_dataset)
         return GenericModel(self.model)
     """
@@ -128,35 +128,36 @@ class CatboostTuner(ModelTuner):
         X_train, X_test, y_train, y_test, weights_train, weights_test = train_test_split(
             self.X, self.y, self.weights, test_size=0.2, random_state=42
         )
-        dtrain = Pool(data=X_train, label=y_train, weight=weights_train)
-        dtest = Pool(data=X_test, label=y_test, weight=weights_test)
-        self.trial_params = {}
-        """
-        if self.device == "GPU":
-            # Optimize additional hyperparameters if on GPU
-            self.trial_params.update(
-                {
-                    "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 2, 20),
-                    "l2_leaf_reg": trial.suggest_loguniform("l2_leaf_reg", 1e-2, 1e0),
-                }
-            )
-        """
-        self.trial_params.update(
-            {
-                "learning_rate": trial.suggest_loguniform("learning_rate", 1e-4, 1e-1),
-                "depth": trial.suggest_int("depth", 4, 11),
-                "iterations": trial.suggest_int("iterations", 50, 500),
-                "bootstrap_type": trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli", "MVS"]),
-            }
-        )
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dtest = xgb.DMatrix(X_test, label=y_test)
 
-        reg = CatBoostRegressor(**self.trial_params)
-        reg.fit(dtrain, eval_set=dtest, early_stopping_rounds=100, verbose=0)
+        param = {
+            "silent": 1,
+            "objective": "reg:linear",
+            "eval_metric": "mae",
+            "booster": trial.suggest_categorical("booster", ["gbtree", "gblinear", "dart"]),
+            "lambda": trial.suggest_loguniform("lambda", 1e-8, 1.0),
+            "alpha": trial.suggest_loguniform("alpha", 1e-8, 1.0),
+        }
+
+        if param["booster"] == "gbtree" or param["booster"] == "dart":
+            param["max_depth"] = trial.suggest_int("max_depth", 1, 9)
+            param["eta"] = trial.suggest_loguniform("eta", 1e-8, 1.0)
+            param["gamma"] = trial.suggest_loguniform("gamma", 1e-8, 1.0)
+            param["grow_policy"] = trial.suggest_categorical("grow_policy", ["depthwise", "lossguide"])
+        if param["booster"] == "dart":
+            param["sample_type"] = trial.suggest_categorical("sample_type", ["uniform", "weighted"])
+            param["normalize_type"] = trial.suggest_categorical("normalize_type", ["tree", "forest"])
+            param["rate_drop"] = trial.suggest_loguniform("rate_drop", 1e-8, 1.0)
+            param["skip_drop"] = trial.suggest_loguniform("skip_drop", 1e-8, 1.0)
+
+        reg = xgb.XGBRegressor(**param)
+        reg.fit(dtrain, eval_set=dtest, sample_weight=weights_train, early_stopping_rounds=100, verbose=0)
         y_pred = reg.predict(X_test)
         score = mean_absolute_error(y_test, y_pred)
         return score
 
-    def _hyperparam_search(self: "CatboostTuner", train_dataset: CatboostDataset, time_budget=1800):
+    def _hyperparam_search(self: "XgboostTuner", train_dataset: XgboostDataset, time_budget=1800):
         print("Starting hyperparameter search for", time_budget, "seconds.")
 
         self.X = train_dataset.X
@@ -170,13 +171,13 @@ class CatboostTuner(ModelTuner):
         print("Best trial parameters:", self.best_params)
        
         
-    def _final_train(self: "CatboostTuner", train_dataset: CatboostDataset):
-        train_pool = Pool(data=train_dataset.X, label=train_dataset.y, weight=train_dataset.weights)
+    def _final_train(self: "XgboostTuner", train_dataset: XgboostDataset):
+        dtrain = xgb.DMatrix(train_dataset.X, label=train_dataset.y)        
         if self.best_params is not None:
-            self.model = CatBoostRegressor(**self.best_params)
+            self.model = xgb.XGBRegressor(**self.best_params)
         else:
-            self.model = CatBoostRegressor()
-        self.model.fit(train_pool)
+            self.model = xgb.XGBRegressor()
+        self.model.fit(dtrain, sample_weight=train_dataset.weights, early_stopping_rounds=100)
 
 
 class KerasTuner(ModelTuner):

@@ -6,7 +6,7 @@ from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem import AllChem #deprecate
 
-NBITS = 1024
+NBITS = 2048
 RADIUS = 3
 
 class MorganFeaturizer:

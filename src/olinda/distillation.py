@@ -476,7 +476,7 @@ def convert_to_onnx(
         spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
         model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
     elif model.type == "xgboost":
-        model_onnx = convert_xgboost(model, 'tree-based classifier',
+        model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
                              [('input', FloatTensorType([None, 2048]))])
 
     model_onnx = GenericModel(model_onnx)

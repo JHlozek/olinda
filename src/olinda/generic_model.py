@@ -31,7 +31,7 @@ class GenericModel(DistillBaseModel):
             self.type = "pytorch"
             self.name = type(model).__name__.lower()
 
-        elif issubclass(type(model), (xgb.XGBRegressor)):
+        elif issubclass(type(model), (xgb.core.Booster)):
             self.nn = model #update
             self.type = "xgboost"
             self.name = type(model).__name__.lower()

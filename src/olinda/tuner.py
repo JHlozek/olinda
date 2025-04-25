@@ -128,13 +128,14 @@ class XgboostTuner(ModelTuner):
         X_train, X_test, y_train, y_test, weights_train, weights_test = train_test_split(
             self.X, self.y, self.weights, test_size=0.2, random_state=42
         )
-        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dtrain = xgb.DMatrix(X_train, label=y_train, weight=weights_train)
         dtest = xgb.DMatrix(X_test, label=y_test)
 
         param = {
             "silent": 1,
             "objective": "reg:linear",
             "eval_metric": "mae",
+            #"early_stopping_rounds": 100, 
             "booster": trial.suggest_categorical("booster", ["gbtree", "gblinear", "dart"]),
             "lambda": trial.suggest_loguniform("lambda", 1e-8, 1.0),
             "alpha": trial.suggest_loguniform("alpha", 1e-8, 1.0),
@@ -151,9 +152,11 @@ class XgboostTuner(ModelTuner):
             param["rate_drop"] = trial.suggest_loguniform("rate_drop", 1e-8, 1.0)
             param["skip_drop"] = trial.suggest_loguniform("skip_drop", 1e-8, 1.0)
 
-        reg = xgb.XGBRegressor(**param)
-        reg.fit(dtrain, eval_set=dtest, sample_weight=weights_train, early_stopping_rounds=100, verbose=0)
-        y_pred = reg.predict(X_test)
+        #reg = xgb.XGBRegressor(**param)
+        #reg.fit(dtrain, eval_set=dtest, sample_weight=weights_train, verbose=0)
+        pruning_callback = optuna.integration.XGBoostPruningCallback(trial, "validation-mae")
+        reg = xgb.train(param, dtrain, evals=[(dtest, "validation")], callbacks=[pruning_callback])
+        y_pred = reg.predict(dtest)
         score = mean_absolute_error(y_test, y_pred)
         return score
 
@@ -172,12 +175,9 @@ class XgboostTuner(ModelTuner):
        
         
     def _final_train(self: "XgboostTuner", train_dataset: XgboostDataset):
-        dtrain = xgb.DMatrix(train_dataset.X, label=train_dataset.y)        
-        if self.best_params is not None:
-            self.model = xgb.XGBRegressor(**self.best_params)
-        else:
-            self.model = xgb.XGBRegressor()
-        self.model.fit(dtrain, sample_weight=train_dataset.weights, early_stopping_rounds=100)
+        dtrain = xgb.DMatrix(train_dataset.X, label=train_dataset.y, weight=train_dataset.weights)        
+        self.model = xgb.train(self.best_params, dtrain)
+        return GenericModel(self.model)
 
 
 class KerasTuner(ModelTuner):

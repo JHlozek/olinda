@@ -100,7 +100,7 @@ class CatboostTuner(ModelTuner):
         """
         self.iterations = 100
 
-    def fit(self: "CatboostTuner", datamodule: GenericOutputDM, time_budget=1800) -> GenericModel:
+    def fit(self: "CatboostTuner", datamodule: GenericOutputDM, time_budget=3600) -> GenericModel:
         """Fit an optimal model using the given dataset.
 
         Args:
@@ -113,7 +113,7 @@ class CatboostTuner(ModelTuner):
         self.datamodule = datamodule
         train_dataset = CatboostDataset(self.datamodule, "train")
         
-        self._hyperparam_search(train_dataset)
+        self._hyperparam_search(train_dataset, time_budget=time_budget)
         self._final_train(train_dataset)
         return GenericModel(self.model)
     """
@@ -145,7 +145,7 @@ class CatboostTuner(ModelTuner):
             {
                 "learning_rate": trial.suggest_loguniform("learning_rate", 1e-4, 1e-1),
                 "depth": trial.suggest_int("depth", 4, 11),
-                "iterations": trial.suggest_int("iterations", 50, 500),
+                "iterations": trial.suggest_int("iterations", 50, 200),
                 "bootstrap_type": trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli", "MVS"]),
             }
         )

@@ -35,7 +35,7 @@ from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid
 from olinda.generic_model import GenericModel
 from olinda.tuner import ModelTuner, CatboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
-from olinda.utils.s3 import download_s3_folder
+from olinda.utils.s3 import download_s3_folder, ProgressPercentage
 
 ### TODO: Improve object-oriented setup of distillation code segments
 class Distiller(object):

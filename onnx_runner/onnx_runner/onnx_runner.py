@@ -22,7 +22,7 @@ class ONNX_Runner(object):
         for i, smi in enumerate(smiles_list):
             if X[i] is not None:
                 pred = onnx_rt.run(output_names, {"input": [X[i].astype(np.float32)]})
-                preds.append(pred[1][0][0]) #remove tensorflow nesting
+                preds.append(pred[0][0][0]) #remove tensorflow nesting #pred[1][0][1] with weighting
             else:
                 preds.append("")
         return preds

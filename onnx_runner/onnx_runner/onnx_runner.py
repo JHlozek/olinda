@@ -1,5 +1,6 @@
 import onnx
 import onnxruntime as rt
+import numpy as np
 from .morgan_featurizer import MorganFeaturizer
 
 class ONNX_Runner(object):
@@ -20,8 +21,8 @@ class ONNX_Runner(object):
         preds = []
         for i, smi in enumerate(smiles_list):
             if X[i] is not None:
-                pred = onnx_rt.run(output_names, {"features": [X[i]]})
-                preds.append(pred[0][0][0]) #remove tensorflow nesting
+                pred = onnx_rt.run(output_names, {"input": [X[i].astype(np.float32)]})
+                preds.append(pred[0][0][0]) #remove tensorflow nesting #pred[1][0][1] with weighting
             else:
                 preds.append("")
         return preds

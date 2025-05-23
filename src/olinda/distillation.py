@@ -28,12 +28,13 @@ import tf2onnx
 import onnx
 import pandas as pd
 
-from catboost import Pool
+from onnxmltools.convert import convert_xgboost
+from skl2onnx.common.data_types import FloatTensorType, DoubleTensorType
 
 from olinda.data import ReferenceSmilesDM, FeaturizedSmilesDM, GenericOutputDM
 from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid
 from olinda.generic_model import GenericModel
-from olinda.tuner import ModelTuner, CatboostTuner
+from olinda.tuner import ModelTuner, XgboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
 from olinda.utils.s3 import download_s3_folder, ProgressPercentage
 
@@ -41,7 +42,7 @@ from olinda.utils.s3 import download_s3_folder, ProgressPercentage
 class Distiller(object):
     def __init__(self,
         featurizer: Optional[Featurizer] = MorganFeaturizer(),
-        tuner: ModelTuner = CatboostTuner(),
+        tuner: ModelTuner = XgboostTuner(),
         reference_smiles_dm: Optional[ReferenceSmilesDM] = None,
         featurized_smiles_dm: Optional[FeaturizedSmilesDM] = None,
         generic_output_dm: Optional[GenericOutputDM] = None,
@@ -474,18 +475,9 @@ def convert_to_onnx(
         example = featurizer.featurize(["CCCOC"])
         spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
         model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
-    elif model.type == "catboost":
-        with tempfile.NamedTemporaryFile(suffix=".onnx") as tmp:
-            model.nn.save_model(
-            tmp.name,
-            format='onnx',
-            )
-            model_onnx = onnx.load(tmp.name)
-            #define prediction output shape (1,1)
-            output = model_onnx.graph.output[0]
-            output.type.tensor_type.shape.dim.clear()
-            output.type.tensor_type.shape.dim.add().dim_value = 1  # batch size
-            output.type.tensor_type.shape.dim.add().dim_value = 1  # single output value
+    elif model.type == "xgboost":
+        model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
+                             [('input', FloatTensorType([None, 2048]))])
 
     model_onnx = GenericModel(model_onnx)
     return model_onnx

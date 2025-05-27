@@ -37,6 +37,7 @@ from olinda.generic_model import GenericModel
 from olinda.tuner import ModelTuner, XgboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
 from olinda.utils.s3 import download_s3_folder, ProgressPercentage
+from olinda.reports.report import Reporter
 
 ### TODO: Improve object-oriented setup of distillation code segments
 class Distiller(object):
@@ -73,11 +74,12 @@ class Distiller(object):
         self.clean = clean
         self.test = test      
 
-    def distill(self, model: Any) -> pl.LightningModule:
+    def distill(self, model: Any, output_path: str = None) -> pl.LightningModule:
         """Distill models.
         
         Args:
             model (Any): Teacher Model.
+            output_path (str): Path to save distilled onnx model.
         Returns:
             pl.LightningModule: Student Model.
         """
@@ -86,6 +88,7 @@ class Distiller(object):
             clean_workspace(Path(self.working_dir), reference=True)
         
         # Convert model to a generic model
+        model_path = model
         model = GenericModel(model)
         if model.type == "zairachem":
             fetch_ref_library()
@@ -131,7 +134,14 @@ class Distiller(object):
         # Select and Train student model
         student_model = self.tuner.fit(student_training_dm)
         model_onnx = convert_to_onnx(student_model, self.featurizer)
-    
+
+        if not os.path.exists(os.path.dirname(output_path)):
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        model_onnx.save(output_path)
+
+        r = Reporter(model_path, output_path)
+        r.report()
+
         return model_onnx
 
 def fetch_ref_library():
@@ -392,7 +402,8 @@ def gen_model_output(
             # inverse of ratio of predicted active to inactive 
             y_bin_train = [1 if val > 0.5 else 0 for val in training_output["pred"]]
             y_bin_ref = [1 if val > 0.5 else 0 for val in output["pred"]]
-            active_weight = (y_bin_train.count(0) + y_bin_ref.count(0)) / (y_bin_train.count(1) + y_bin_ref.count(1)) #inactive to active ratio
+            active_weight = 1 #(y_bin_train.count(0) + y_bin_ref.count(0)) / (y_bin_train.count(1) + y_bin_ref.count(1)) #inactive to active ratio
+            
             
             print("Creating model prediction files")
             output_list = []
@@ -480,8 +491,7 @@ def convert_to_onnx(
                              [('input', FloatTensorType([None, 2048]))])
 
     model_onnx = GenericModel(model_onnx)
-    return model_onnx
-
+    return model_onnx  
 
 def clean_workspace(
     working_dir: Path, featurizer: Featurizer = None, reference: bool = False

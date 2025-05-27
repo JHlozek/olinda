@@ -1,6 +1,5 @@
 """A wapper to provide a tensorflow dataset interface."""
 
-import tensorflow as tf
 import numpy as np
 
 from olinda.data import GenericOutputDM

@@ -3,7 +3,6 @@
 from typing import Any
 
 import pytorch_lightning as pl
-import tensorflow as tf
 import torch.nn as nn
 
 import onnx
@@ -35,12 +34,7 @@ class GenericModel(DistillBaseModel):
             self.nn = model #update
             self.type = "xgboost"
             self.name = type(model).__name__.lower()
-
-        elif issubclass(type(model), (tf.keras.Model)):
-            self.nn = model
-            self.type = "tensorflow"
-            self.name = type(model).__name__.lower()
-       
+      
         elif issubclass(type(model), (onnx.onnx_ml_pb2.ModelProto)):
             self.nn = run_onnx_runtime(model)
             self.type = "onnx"

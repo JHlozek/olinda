@@ -23,8 +23,6 @@ from botocore import UNSIGNED
 from botocore.config import Config
 import zipfile
 
-import tensorflow as tf
-import tf2onnx
 import onnx
 import pandas as pd
 
@@ -482,12 +480,7 @@ def convert_to_onnx(
         onnx.onnx_ml_pb2.ModelProto: ONNX formatted model
     """
       
-    if model.type == "tensorflow":
-        example = featurizer.featurize(["CCCOC"])
-        spec = (tf.TensorSpec(example.shape, featurizer.tf_dtype, name="input"),)
-        model_onnx, _ = tf2onnx.convert.from_keras(model.nn, input_signature=spec)
-    elif model.type == "xgboost":
-        model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
+    model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
                              [('input', FloatTensorType([None, 2048]))])
 
     model_onnx = GenericModel(model_onnx)

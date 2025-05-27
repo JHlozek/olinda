@@ -11,7 +11,6 @@ from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem import AllChem #deprecate
 
-import tensorflow as tf
 import torch
 
 from olinda.utils.utils import get_package_root_path
@@ -34,7 +33,6 @@ class Featurizer(ABC):
 class MorganFeaturizer(Featurizer):
     def __init__(self: "MorganFeaturizer") -> None:
         self.name = "morganfeaturizer"
-        self.tf_dtype = tf.float32
         self.mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=RADIUS,fpSize=NBITS)
 
     def clip_sparse(self: "MorganFeaturizer", vect: List, nbits: int) -> List:
@@ -74,7 +72,6 @@ class Flat2Grid(MorganFeaturizer):
     def __init__(self: "Flat2Grid") -> None:
         self.transformer = joblib.load(get_package_root_path() / "flat2grid.joblib")
         self.name = "flat2grid"
-        self.tf_dtype = tf.double
 
     def featurize(self: "Flat2Grid", batch: Any) -> Any:
         """Featurize input batch.
@@ -115,7 +112,6 @@ class Flat2Grid(MorganFeaturizer):
 class DatamolFeaturizer(Featurizer):
     def __init__(self: "DatamolFeaturizer") -> None:
         self.name = "datamolfeaturizer"
-        self.tf_dtype = tf.float32
         
     def featurize(self: "DatamolFeaturizer", batch: Any) -> Any:
         """Featurize input batch.

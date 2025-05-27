@@ -42,6 +42,8 @@ onnxmltools = ">=1.13.0"
 skl2onnx = ">=1.18.0"
 onnx_runner = {path = "./onnx_runner"}
 optuna = ">=4.3.0"
+stylia = { git = "https://github.com/ersilia-os/stylia.git" }
+datamol = ">=0.12"
 
 
 [tool.poetry.dev-dependencies]

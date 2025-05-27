@@ -5,6 +5,8 @@ from typing import Any, List
 
 import joblib
 import numpy as np
+import pandas as pd
+import datamol as dm
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem import AllChem #deprecate
@@ -66,52 +68,7 @@ class MorganFeaturizer(Featurizer):
         fps = [self.clip_sparse(self.mfpgen.GetCountFingerprint(mol), NBITS)
          if mol is not None else None for mol in mols
         ]
-        return np.array(fps)
-
-class MorganFeaturizerOld(Featurizer):
-    def __init__(self: "MorganFeaturizer") -> None:
-        self.name = "morganfeaturizer"
-        self.tf_dtype = tf.float32
-        
-    def featurize(self: "MorganFeaturizer", batch: Any) -> Any:
-        """Featurize input batch.
-
-        Args:
-            batch (Any): batch of smiles
-
-        Returns:
-            Any: featurized outputs
-        """
-        mols = [Chem.MolFromSmiles(smi) for smi in batch if smi is not None]
-        ecfps = self.ecfp_counts(mols)
-        return ecfps
-    
-    def ecfp_counts(self: "MorganFeaturizer", mols: List) -> List:
-        """Create ECFPs from batch of smiles.
-
-        Args:
-            mols (List): batch of molecules
-
-        Returns:
-            List: batch of ECFPs
-        """
-        fps = [
-            AllChem.GetMorganFingerprint(
-                mol, radius=3, useCounts=True, useFeatures=True
-            ) if mol is not None else None
-            for mol in mols
-        ]
-        
-        nfp = []
-        for fp in fps:
-            if fp is not None:
-                tmp = np.zeros((1024), np.float32)
-                for idx, v in fp.GetNonzeroElements().items():
-                    tmp[idx % 1024] += int(v)
-                nfp.append(tmp)
-            else:
-                nfp.append(None)
-        return np.array(nfp)
+        return np.array(fps)   
 
 class Flat2Grid(MorganFeaturizer):
     def __init__(self: "Flat2Grid") -> None:
@@ -154,3 +111,23 @@ class Flat2Grid(MorganFeaturizer):
                 nidx = idx % 1024
                 nfp[i, nidx] += int(v)
         return nfp
+
+class DatamolFeaturizer(Featurizer):
+    def __init__(self: "DatamolFeaturizer") -> None:
+        self.name = "datamolfeaturizer"
+        self.tf_dtype = tf.float32
+        
+    def featurize(self: "DatamolFeaturizer", batch: Any) -> Any:
+        """Featurize input batch.
+
+        Args:
+            batch (Any): batch of smiles
+
+        Returns:
+            Any: featurized outputs
+        """
+        mols = [dm.to_mol(smi) for smi in batch if smi is not None]
+        descriptors = [dm.descriptors.compute_many_descriptors(mol) for mol in mols]
+        X = np.array(pd.DataFrame(descriptors), dtype=np.float32)
+
+        return X

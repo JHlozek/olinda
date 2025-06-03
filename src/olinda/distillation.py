@@ -11,6 +11,7 @@ import math
 import json
 import tempfile
 from typing import Any, Optional
+import joblib
 
 from cbor2 import dump
 import joblib
@@ -30,7 +31,7 @@ from onnxmltools.convert import convert_xgboost
 from skl2onnx.common.data_types import FloatTensorType, DoubleTensorType
 
 from olinda.data import ReferenceSmilesDM, FeaturizedSmilesDM, GenericOutputDM
-from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid
+from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid, DatamolFeaturizer
 from olinda.generic_model import GenericModel
 from olinda.tuner import ModelTuner, XgboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
@@ -107,7 +108,7 @@ class Distiller(object):
             
             self.featurized_smiles_dm = gen_featurized_smiles(self.reference_smiles_dm, self.featurizer, self.working_dir, num_data=self.num_data, clean=self.clean)
             self.featurized_smiles_dm.setup("train")       
-            student_training_dm = gen_model_output(model, self.featurized_smiles_dm, self.working_dir, self.num_data, self.clean)
+            student_training_dm = gen_model_output(model, self.featurized_smiles_dm, self.featurizer, self.working_dir, self.num_data, self.clean)
         else:
             student_training_dm = self.generic_output_dm
             
@@ -136,8 +137,13 @@ class Distiller(object):
         if not os.path.exists(os.path.dirname(output_path)):
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
         model_onnx.save(output_path)
+        joblib.dump(student_model, output_path[:-5] + ".joblib")
 
-        r = Reporter(model_path, output_path)
+        if issubclass(self.featurizer, MorganFeaturizer()):
+            feat = "morgan"
+        else:
+            feat = "datamol"
+        r = Reporter(model_path, output_path, feat)
         r.report()
 
         return model_onnx
@@ -227,7 +233,7 @@ def gen_training_dataset(
     
     featurized_smiles_dm.setup("train")
     # Generate model outputs and save to a file
-    model_output_dm = gen_model_output(featurized_smiles_dm, model, working_dir, clean)
+    model_output_dm = gen_model_output(model, featurized_smiles_dm, featurizer, working_dir, clean)
 
     return model_output_dm
 
@@ -309,6 +315,7 @@ def gen_featurized_smiles(
 def gen_model_output(
     model: GenericModel,
     featurized_smiles_dm: pl.LightningDataModule,
+    featurizer: Featurizer,
     working_dir: Path,
     ref_size: int,
     clean: bool = False,
@@ -406,9 +413,9 @@ def gen_model_output(
             print("Creating model prediction files")
             output_list = []
             train_counter = 0
-            morganFeat = MorganFeaturizer()
+            #morganFeat = MorganFeaturizer()
             for i, row in training_output.dropna().iterrows():
-                fp = morganFeat.featurize([row["smiles"]])
+                fp = featurizer.featurize([row["smiles"]])
                 if fp is None:
                     continue
                 if row["pred"] > 0.5:
@@ -479,9 +486,10 @@ def convert_to_onnx(
     Returns:
         onnx.onnx_ml_pb2.ModelProto: ONNX formatted model
     """
-      
+    
+    test_desc = featurizer.featurize(["CCC"])  
     model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
-                             [('input', FloatTensorType([None, 2048]))])
+                             [('input', FloatTensorType([None, test_desc.shape[1]]))])
 
     model_onnx = GenericModel(model_onnx)
     return model_onnx  
@@ -500,10 +508,11 @@ def clean_workspace(
     curr_ref_smiles_path = Path(working_dir) / "reference" / "reference_smiles.csv"
     orig_ref_smiles_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_library.csv")
     
-    if featurizer and os.path.exists(Path(working_dir) / "reference" / "reference_smiles_dl.joblib"):
-        os.remove(Path(working_dir) / "reference" / "reference_smiles_dl.joblib")
-        os.remove(Path(working_dir) / "reference" / f"featurized_smiles_{type(featurizer).__name__.lower()}.cbor"
-        )
+    if featurizer:
+        if os.path.exists(Path(working_dir) / "reference" / "reference_smiles_dl.joblib"):
+            os.remove(Path(working_dir) / "reference" / "reference_smiles_dl.joblib")
+        if os.path.exists(Path(working_dir) / "reference" / "featurized_smiles_{type(featurizer).__name__.lower()}.cbor"):
+            os.remove(Path(working_dir) / "reference" / f"featurized_smiles_{type(featurizer).__name__.lower()}.cbor")
     
     if reference and os.path.exists(curr_ref_smiles_path):
         if os.path.exists(orig_ref_smiles_path):

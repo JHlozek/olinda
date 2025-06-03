@@ -4,7 +4,7 @@ import onnx_runner
 from olinda.reports.plots import RocCurvePlot, RegressionPlotRaw
 
 class Reporter:
-    def __init__(self, zaira_path, olinda_path):
+    def __init__(self, zaira_path, olinda_path, featurizer="morgan"):
         self.zaira_path = zaira_path
         self.olinda_path = olinda_path
         
@@ -13,8 +13,12 @@ class Reporter:
         
         self.zaira_train_preds = zaira_preds_df["prediction"].tolist()
         self.zaira_train_true = zaira_true_df["true-value"].tolist()
+        
+        if featurizer == "morgan":
+            onnx_model = onnx_runner.ONNX_Runner(olinda_path, featurizer=onnx_runner.morgan_featurizer.MorganFeaturizer())
+        else:
+            onnx_model = onnx_runner.ONNX_Runner(olinda_path, featurizer=onnx_runner.morgan_featurizer.DatamolFeaturizer())
 
-        onnx_model = onnx_runner.ONNX_Runner(olinda_path)
         self.olinda_preds = onnx_model.predict(zaira_preds_df["smiles"].tolist())
 
     def report(self):

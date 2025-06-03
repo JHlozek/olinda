@@ -98,14 +98,14 @@ class Flat2Grid(MorganFeaturizer):
         """
         fps = [
             AllChem.GetMorganFingerprint(
-                mol, radius=3, useCounts=True, useFeatures=True
+                mol, radius=RADIUS, useCounts=True, useFeatures=True
             )
             for mol in mols
         ]
-        nfp = np.zeros((len(fps), 1024), np.uint8)
+        nfp = np.zeros((len(fps), NBITS), np.uint8)
         for i, fp in enumerate(fps):
             for idx, v in fp.GetNonzeroElements().items():
-                nidx = idx % 1024
+                nidx = idx % NBITS
                 nfp[i, nidx] += int(v)
         return nfp
 

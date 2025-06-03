@@ -33,7 +33,7 @@ optuna-integration[xgboost] = ">=4.3.0"
 xgboost = ">=3.0.0"
 onnxmltools = ">=1.13.0"
 skl2onnx = ">=1.18.0"
-onnx_runner = {path = "./onnx_runner"}
+onnx_runner = { git = "https://github.com/JHlozek/onnx-runner.git"}
 stylia = { git = "https://github.com/ersilia-os/stylia.git" }
 datamol = ">=0.12"
 

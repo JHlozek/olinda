@@ -11,7 +11,6 @@ import math
 import json
 import tempfile
 from typing import Any, Optional
-import joblib
 
 from cbor2 import dump
 import joblib
@@ -137,11 +136,11 @@ class Distiller(object):
         if not os.path.exists(os.path.dirname(output_path)):
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
         model_onnx.save(output_path)
-        joblib.dump(student_model, output_path[:-5] + ".joblib")
+        student_model.nn.save_model(output_path[:-5] + ".json")
 
-        if issubclass(self.featurizer, MorganFeaturizer()):
+        if issubclass(type(self.featurizer), MorganFeaturizer):
             feat = "morgan"
-        else:
+        elif issubclass(type(self.featurizer), DatamolFeaturizer):
             feat = "datamol"
         r = Reporter(model_path, output_path, feat)
         r.report()

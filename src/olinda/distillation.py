@@ -6,11 +6,13 @@ filterwarnings(action="ignore")
 import os
 import glob
 from pathlib import Path
+from importlib import resources
 import shutil
 import math
 import json
 import tempfile
 from typing import Any, Optional
+from loguru import logger
 
 from cbor2 import dump
 import joblib
@@ -36,6 +38,7 @@ from olinda.tuner import ModelTuner, XgboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
 from olinda.utils.s3 import download_s3_folder, ProgressPercentage
 from olinda.reports.report import Reporter
+from olinda.configs.vars import REF_FOLD_SIZE
 
 ### TODO: Improve object-oriented setup of distillation code segments
 class Distiller(object):
@@ -89,25 +92,26 @@ class Distiller(object):
         model_path = model
         model = GenericModel(model)
         if model.type == "zairachem":
-            fetch_ref_library()
-            ref_library = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_library.csv")
-            precalc_smiles_df = pd.read_csv(ref_library, header=None)
-            ref_data = len(precalc_smiles_df)
-            self.reference_smiles_dm = ReferenceSmilesDM(num_data=self.num_data)
+            #fetch_ref_library()
+            ref_library_path = resources.files("olinda").joinpath("olinda_reference_library.csv")
+            ref_library_df = pd.read_csv(ref_library_path)
+            self.reference_smiles_dm = ReferenceSmilesDM(ref_library_df, num_data=self.num_data)
             self.reference_smiles_dm.prepare_data()
             self.reference_smiles_dm.setup("train")
             
-            if self.num_data > ref_data:
-                self.num_data = ref_data  
-            zairachem_folds = math.ceil(self.num_data / 50000)
+            if self.num_data > len(ref_library_df):
+                self.num_data = len(ref_library_df)
+            """
+            zairachem_folds = math.ceil(self.num_data / REF_FOLD_SIZE) #Calculate number of folds required
             zaira_describe_path = os.path.join(model.name[len(model.type)+1:], "descriptors")
             with open(os.path.join(zaira_describe_path, "done_eos.json")) as used_desc_file:
                 req_descs = json.load(used_desc_file)
             fetch_descriptors(zairachem_folds, req_descs)
+            """
             
             self.featurized_smiles_dm = gen_featurized_smiles(self.reference_smiles_dm, self.featurizer, self.working_dir, num_data=self.num_data, clean=self.clean)
             self.featurized_smiles_dm.setup("train")       
-            student_training_dm = gen_model_output(model, self.featurized_smiles_dm, self.featurizer, self.working_dir, self.num_data, self.clean)
+            student_training_dm = gen_model_output(model, self.featurized_smiles_dm, self.featurizer, ref_library_path, self.working_dir, self.num_data, self.clean)
         else:
             student_training_dm = self.generic_output_dm
             
@@ -147,6 +151,7 @@ class Distiller(object):
 
         return model_onnx
 
+#Deprecated
 def fetch_ref_library():
     s3 = boto3.resource('s3', config=Config(signature_version=UNSIGNED))
     bucket = s3.Bucket('olinda')
@@ -165,6 +170,7 @@ def fetch_ref_library():
                 Callback=ProgressPercentage(bucket, "olinda_reference_library.csv")
                 )
 
+#Deprecated
 def fetch_descriptors(
     num_folds: int,
     req_descs: list,
@@ -315,6 +321,7 @@ def gen_model_output(
     model: GenericModel,
     featurized_smiles_dm: pl.LightningDataModule,
     featurizer: Featurizer,
+    ref_library_path: str,
     working_dir: Path,
     ref_size: int,
     clean: bool = False,
@@ -376,13 +383,12 @@ def gen_model_output(
                     shutil.rmtree(zaira_distill_path)
                     os.mkdir(zaira_distill_path)
 
-                from loguru import logger
                 output = pd.DataFrame(columns = ["smiles", 'pred'])
-                for i in range(math.ceil(ref_size/50000)):
-                    logger.info("Getting ZairaChem predictions for fold " + str(i+1) + " of " + str(math.ceil(ref_size/50000)))
-                    folder = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k")
-                    smiles_input_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", folder, "reference_library.csv")
-                    preds = model(smiles_input_path)
+                for i in range(math.ceil(ref_size/REF_FOLD_SIZE)):
+                    logger.info("Getting ZairaChem predictions for fold " + str(i+1) + " of " + str(math.ceil(ref_size/REF_FOLD_SIZE)))
+                    #folder = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k")
+                    #smiles_input_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", folder, "reference_library.csv")
+                    preds = model(ref_library_path)
                     output = pd.concat([output, preds])    
                 output = output[["smiles", "pred"]]   
              
@@ -412,7 +418,6 @@ def gen_model_output(
             print("Creating model prediction files")
             output_list = []
             train_counter = 0
-            #morganFeat = MorganFeaturizer()
             for i, row in training_output.dropna().iterrows():
                 fp = featurizer.featurize([row["smiles"]])
                 if fp is None:

@@ -21,6 +21,7 @@ class ReferenceSmilesDM(pl.LightningDataModule):
 
     def __init__(
         self: "ReferenceSmilesDM",
+        ref_df: pd.DataFrame,
         num_data: int,
         workspace: Union[str, Path] = None,
         batch_size: int = 32,
@@ -39,6 +40,7 @@ class ReferenceSmilesDM(pl.LightningDataModule):
             target_transform (Optional[Any]): Transforms for the target. Defaults to None.
         """
         super().__init__()
+        self.ref_df = ref_df
         self.workspace = workspace or get_workspace_path()
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -55,9 +57,8 @@ class ReferenceSmilesDM(pl.LightningDataModule):
         ):
             ref_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_library.csv")
             # check if reference files not already present
-            if os.path.exists(Path(self.workspace / "reference" / "reference_smiles.csv")) == False or os.path.getsize(ref_path) != os.path.getsize(ref_path):
-                df = pd.read_csv(ref_path)
-                df.to_csv(Path(self.workspace / "reference" / "reference_smiles.csv"), header=False, index=False)
+            if os.path.exists(Path(self.workspace / "reference" / "reference_smiles.csv")) == False:
+                self.ref_df.to_csv(Path(self.workspace / "reference" / "reference_smiles.csv"), header=False, index=False)
             
         # Check if processed data files already present
         if (

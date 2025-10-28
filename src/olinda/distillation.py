@@ -34,6 +34,7 @@ from skl2onnx.common.data_types import FloatTensorType, DoubleTensorType
 from olinda.data import ReferenceSmilesDM, FeaturizedSmilesDM, GenericOutputDM
 from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid, DatamolFeaturizer
 from olinda.generic_model import GenericModel
+from olinda.models.distilled_model import DistilledModel
 from olinda.tuner import ModelTuner, XgboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
 from olinda.utils.s3 import download_s3_folder, ProgressPercentage
@@ -49,7 +50,7 @@ class Distiller(object):
         featurized_smiles_dm: Optional[FeaturizedSmilesDM] = None,
         generic_output_dm: Optional[GenericOutputDM] = None,
         num_data: int = 100000,
-        clean: bool = True,
+        clean: bool = False,
         test: bool = False,
     ):
         """
@@ -70,9 +71,9 @@ class Distiller(object):
         self.featurized_smiles_dm = featurized_smiles_dm
         self.generic_output_dm = generic_output_dm
         self.num_data = num_data
+        self.clean = clean
         if test:
             self.num_data = self.num_data // 10
-        self.clean = clean
         self.test = test      
 
     def distill(self, model: Any, output_path: str = None) -> pl.LightningModule:
@@ -91,16 +92,17 @@ class Distiller(object):
         # Convert model to a generic model
         model_path = model
         model = GenericModel(model)
+        
+        ref_library_path = os.path.join(resources.files("olinda"), "reference_library/olinda_reference_library.csv")
+        ref_library_df = pd.read_csv(ref_library_path)
+        self.reference_smiles_dm = ReferenceSmilesDM(ref_library_df, num_data=self.num_data)
+        self.reference_smiles_dm.prepare_data()
+        self.reference_smiles_dm.setup("train")
+        if self.num_data > len(ref_library_df):
+            self.num_data = len(ref_library_df)
+        
         if model.type == "zairachem":
-            #fetch_ref_library()
-            ref_library_path = resources.files("olinda").joinpath("olinda_reference_library.csv")
-            ref_library_df = pd.read_csv(ref_library_path)
-            self.reference_smiles_dm = ReferenceSmilesDM(ref_library_df, num_data=self.num_data)
-            self.reference_smiles_dm.prepare_data()
-            self.reference_smiles_dm.setup("train")
-            
-            if self.num_data > len(ref_library_df):
-                self.num_data = len(ref_library_df)
+            #fetch_ref_library()            
             """
             zairachem_folds = math.ceil(self.num_data / REF_FOLD_SIZE) #Calculate number of folds required
             zaira_describe_path = os.path.join(model.name[len(model.type)+1:], "descriptors")
@@ -108,31 +110,12 @@ class Distiller(object):
                 req_descs = json.load(used_desc_file)
             fetch_descriptors(zairachem_folds, req_descs)
             """
-            
             self.featurized_smiles_dm = gen_featurized_smiles(self.reference_smiles_dm, self.featurizer, self.working_dir, num_data=self.num_data, clean=self.clean)
-            self.featurized_smiles_dm.setup("train")       
+            self.featurized_smiles_dm.setup("train")
             student_training_dm = gen_model_output(model, self.featurized_smiles_dm, self.featurizer, ref_library_path, self.working_dir, self.num_data, self.clean)
         else:
             student_training_dm = self.generic_output_dm
-            
-        if student_training_dm is None:
-            # Prepare reference smiles datamodule
-            if reference_smiles_dm is None:
-                self.reference_smiles_dm = ReferenceSmilesDM(num_data=self.num_data)
-            self.reference_smiles_dm.prepare_data()
-            self.reference_smiles_dm.setup("train")
-        
-            # Generate student model training dataset
-            student_training_dm = gen_training_dataset(
-                model,
-                self.featurizer,
-                self.reference_smiles_dm,
-                self.featurized_smiles_dm,
-                self.working_dir,
-                self.num_data,
-                self.clean,
-            )
-        
+                    
         # Select and Train student model
         student_model = self.tuner.fit(student_training_dm)
         model_onnx = convert_to_onnx(student_model, self.featurizer)
@@ -205,44 +188,6 @@ def fetch_descriptors(
                 download_s3_folder("olinda", s3_path, dest_path)
                 assert os.path.exists(dest_path)
 
-def gen_training_dataset(
-    model: pl.LightningModule,
-    featurizer: Featurizer,
-    reference_smiles_dm: pl.LightningDataModule,
-    featurized_smiles_dm: Optional[pl.LightningDataModule],
-    working_dir: Path,
-    num_data,
-    clean: bool = False,
-    ) -> pl.LightningDataModule:
-    """Generate dataset for training and evaluating student model.
-
-    Args:
-        model (pl.LightningModule): Teacher model.
-        featurizer (Featurizer): Featurizer to use.
-        reference_smiles_dm (pl.LightningDataModule): Reference SMILES to use as inputs.
-        featurized_smiles_dm (Optional[FeaturizedSmilesDM]): Reference Featurized SMILES datamodules.
-        working_dir (Path): Path to model workspace directory.
-        clean (bool): Clean workspace before starting.
-
-    Returns:
-        pl.LightningDataModule: generated Dataset
-    """
-
-    # Generate featurized smiles
-    if featurized_smiles_dm is None:
-        if featurizer is None:
-            raise Exception("Featurizer cannont be None.")
-        featurized_smiles_dm = gen_featurized_smiles(
-            reference_smiles_dm, featurizer, working_dir, num_data, clean,
-        )
-    
-    featurized_smiles_dm.setup("train")
-    # Generate model outputs and save to a file
-    model_output_dm = gen_model_output(model, featurized_smiles_dm, featurizer, working_dir, clean)
-
-    return model_output_dm
-
-
 def gen_featurized_smiles(
     reference_smiles_dm: pl.LightningDataModule,
     featurizer: Featurizer,
@@ -279,7 +224,7 @@ def gen_featurized_smiles(
         Path(working_dir) / "reference" / "reference_smiles_dl.joblib",
     )
 
-    # calculate stop_step
+    # find existing featurization file and calculate stop_step
     try:
         with open(
             Path(working_dir)
@@ -295,7 +240,7 @@ def gen_featurized_smiles(
         Path(working_dir)
         / "reference"
         / f"featurized_smiles_{(type(featurizer).__name__.lower())}.cbor",
-        "wb",
+        "ab",
     ) as feature_stream:
         for i, batch in tqdm(
             enumerate(iter(reference_smiles_dl)),
@@ -312,7 +257,7 @@ def gen_featurized_smiles(
             output = featurizer.featurize(batch[1])
             for j, elem in enumerate(batch[0]):
                 dump((elem.tolist(), batch[1][j], output[j].tolist()), feature_stream)
-
+    
     featurized_smiles_dm = FeaturizedSmilesDM(Path(working_dir), featurizer, num_data=num_data)
     
     return featurized_smiles_dm
@@ -323,7 +268,7 @@ def gen_model_output(
     featurizer: Featurizer,
     ref_library_path: str,
     working_dir: Path,
-    ref_size: int,
+    num_data: int,
     clean: bool = False,
 ) -> pl.LightningDataModule:
 
@@ -356,45 +301,11 @@ def gen_model_output(
         Path(working_dir / (model.name) / "featurized_smiles_dl.joblib"),
     )
 
-    # calculate stop step
-    try:
-        with open(
-            Path(working_dir) / (model.name) / "model_output.cbor",
-            "rb",
-        ) as output_stream:
-            stop_step = calculate_cbor_size(output_stream)
-    except Exception:
-        with open(Path(working_dir) / (model.name) / "model_output.cbor",
-            "wb",
-        ) as output_stream:
-            stop_step = 0
-
     with open(
-        Path(working_dir) / (model.name) / "model_output.cbor", "ab"
+        Path(working_dir) / (model.name) / "model_output.cbor", "wb"
     ) as output_stream:
     
         if model.type == "zairachem":
-            zaira_distill_path = os.path.join(model.name[len(model.type)+1:], "distill") #get model root
-            output = None
-            if os.path.exists(os.path.join(zaira_distill_path, "reference_predictions.csv")): #check if predictions already calculated
-                output = pd.read_csv(os.path.join(zaira_distill_path, "reference_predictions.csv"))            
-            else:
-                if len(glob.glob(os.path.join(zaira_distill_path, "*"))) > 0: # clear dir if distillation did not finish correctly
-                    shutil.rmtree(zaira_distill_path)
-                    os.mkdir(zaira_distill_path)
-
-                output = pd.DataFrame(columns = ["smiles", 'pred'])
-                for i in range(math.ceil(ref_size/REF_FOLD_SIZE)):
-                    logger.info("Getting ZairaChem predictions for fold " + str(i+1) + " of " + str(math.ceil(ref_size/REF_FOLD_SIZE)))
-                    #folder = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k")
-                    #smiles_input_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", folder, "reference_library.csv")
-                    preds = model(ref_library_path)
-                    output = pd.concat([output, preds])    
-                output = output[["smiles", "pred"]]   
-             
-                # save to zairachem model folder
-                output.to_csv(os.path.join(zaira_distill_path, "reference_predictions.csv"), index=False)
-            
             # correct wrong zairachem predictions before training Olinda
             training_output = model.get_training_preds()
             for i, row in enumerate(training_output.iterrows()):
@@ -402,11 +313,17 @@ def gen_model_output(
                     training_output.at[i, "pred"] = 1.0 - row[1]["pred"]
                 elif row[1]["pred"] >= 0.5 and row[1]["pred"] <= 1.0 and row[1]["true"] == 0:
                     training_output.at[i, "pred"] = 1.0 - row[1]["pred"]
-                    
+            
+            ref_compounds_needed = num_data - training_output.shape[0]
+            if ref_compounds_needed < 0:
+                ref_compounds_needed = 0
+            zaira_distill_path = os.path.join(model.name[len(model.type)+1:], "distill") #get model root
+            output = gen_zaira_preds(model, ref_library_path, zaira_distill_path, ref_compounds_needed)
+        
             """
             # weight by data source: training/reference
             # inverse of proportion of training compounds to all compounds
-            train_weight = 1 #round((training_output.shape[0] + ref_size) / len(training_output), 2)
+            train_weight = 1 #round((training_output.shape[0] + num_data) / len(training_output), 2)
             """
             
             # inverse of ratio of predicted active to inactive 
@@ -429,8 +346,7 @@ def gen_model_output(
                 
                 output_list.append([row["smiles"], row["pred"], weight])
                 train_counter += 1
-                if i > stop_step:
-                    dump((i, row["smiles"], fp[0].tolist(), [row["pred"]], [weight]), output_stream)
+                dump((i, row["smiles"], fp[0].tolist(), [row["pred"]], [weight]), output_stream)
             output_df = pd.DataFrame(output_list, columns=["smiles", "prediction", "weight"])
             output_df.to_csv(os.path.join(zaira_distill_path, "original_training_set.csv"), index=False)
             
@@ -455,9 +371,8 @@ def gen_model_output(
                             weight = 1/active_weight
                         output_list.append([elem, pred_val, weight])
                         ref_counter += 1
-                        if ref_counter + train_counter > stop_step:
-                            dump((j, elem, batch[2][j], [pred_val], [weight]), output_stream)   
-                
+                        dump((j, elem, batch[2][j], [pred_val], [weight]), output_stream)   
+             
             elif model.type == "ersilia":
                 output = model(batch[1])
                 for j, elem in enumerate(batch[1]):
@@ -477,6 +392,47 @@ def gen_model_output(
         
     return model_output_dm
 
+
+def gen_zaira_preds(
+    model: GenericModel,
+    ref_library_path: str,
+    zaira_distill_path: str,
+    ref_size,
+) -> pl.LightningDataModule:
+
+    """Generate featurized smiles representation dataset.
+
+    Args:
+        featurized_smiles_dm ( pl.LightningDataModule): Featurized SMILES to use as inputs.
+        model (GenericModel): Wrapped Teacher model.
+        ref_library_dir (Path): Path to reference compounds
+        ref_size (int): Number of predictions to calculate
+
+    Returns:
+        pl.LightningDataModule: Dateset with featurized smiles.
+    """
+    output = None
+    if os.path.exists(os.path.join(zaira_distill_path, "reference_library_predictions.csv")): #check if predictions already calculated
+        output = pd.read_csv(os.path.join(zaira_distill_path, "reference_library_predictions.csv"))            
+    else:
+        if len(glob.glob(os.path.join(zaira_distill_path, "*"))) > 0: # clear dir if distillation did not finish correctly
+            shutil.rmtree(zaira_distill_path)
+            os.mkdir(zaira_distill_path)
+        output = pd.DataFrame(columns = ["smiles", 'pred'])
+
+        for i in range(math.ceil(ref_size/REF_FOLD_SIZE)):
+           logger.info("Getting ZairaChem predictions for fold " + str(i+1) + " of " + str(math.ceil(ref_size/REF_FOLD_SIZE)))
+           #folder = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k")
+           #smiles_input_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", folder, "reference_library.csv")
+           preds = model(ref_library_path)
+           output = pd.concat([output, preds])    
+        output = output[["smiles", "pred"]]   
+         
+        # save to zairachem model folder
+        output.to_csv(os.path.join(zaira_distill_path, "reference_library_predictions.csv"), index=False)
+    return output
+
+
 def convert_to_onnx(
     model: pl.LightningModule,
     featurizer: Featurizer,
@@ -495,7 +451,7 @@ def convert_to_onnx(
     model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
                              [('input', FloatTensorType([None, test_desc.shape[1]]))])
 
-    model_onnx = GenericModel(model_onnx)
+    model_onnx = DistilledModel(model_onnx)
     return model_onnx  
 
 def clean_workspace(
@@ -513,10 +469,10 @@ def clean_workspace(
     orig_ref_smiles_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_library.csv")
     
     if featurizer:
-        if os.path.exists(Path(working_dir) / "reference" / "reference_smiles_dl.joblib"):
-            os.remove(Path(working_dir) / "reference" / "reference_smiles_dl.joblib")
-        if os.path.exists(Path(working_dir) / "reference" / "featurized_smiles_{type(featurizer).__name__.lower()}.cbor"):
-            os.remove(Path(working_dir) / "reference" / f"featurized_smiles_{type(featurizer).__name__.lower()}.cbor")
+        if os.path.exists(os.path.join(working_dir, "reference", "reference_smiles_dl.joblib")):
+            os.remove(os.path.join(working_dir, "reference", "reference_smiles_dl.joblib"))
+        if os.path.exists(os.path.join(working_dir, "reference", "featurized_smiles_" + type(featurizer).__name__.lower() + ".cbor")):
+            os.remove(os.path.join(working_dir, "reference", "featurized_smiles_" + type(featurizer).__name__.lower() + ".cbor"))
     
     if reference and os.path.exists(curr_ref_smiles_path):
         if os.path.exists(orig_ref_smiles_path):

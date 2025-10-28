@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds
 
-from olinda.utils.utils import get_workspace_path
+from olinda.utils.utils import get_workspace_path, calculate_cbor_size
 
 
 class ReferenceSmilesDM(pl.LightningDataModule):
@@ -50,46 +50,46 @@ class ReferenceSmilesDM(pl.LightningDataModule):
 
     def prepare_data(self: "ReferenceSmilesDM") -> None:
         """Prepare data."""
-        # Check if data files already present
-        if (
-            Path(self.workspace / "reference" / "reference_smiles.csv").is_file()
-            is False
-        ):
-            ref_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors", "olinda_reference_library.csv")
-            # check if reference files not already present
-            if os.path.exists(Path(self.workspace / "reference" / "reference_smiles.csv")) == False:
-                self.ref_df.to_csv(Path(self.workspace / "reference" / "reference_smiles.csv"), header=False, index=False)
+        # Check if raw data files already present
+        if os.path.exists(Path(self.workspace / "reference" / "reference_smiles.csv")) == False:
+            self.ref_df.to_csv(Path(self.workspace / "reference" / "reference_smiles.csv"), header=False, index=False)
             
-        # Check if processed data files already present
-        if (
-            Path(self.workspace / "reference" / "reference_smiles.cbor").is_file()
-            is False
-            or Path(
-                self.workspace / "reference" / "reference_smiles_truncated.cbor"
-            ).is_file()
-            is False
-        ):
+        # Check if whole processed data file already present
+        lib_path = Path(self.workspace / "reference" / "reference_smiles.cbor")
+        if lib_path.is_file() is False:
             # preprocess csv into a cbor file
-            df = pd.read_csv(self.workspace / "reference" / "reference_smiles.csv", header=None)
-            truncated_df = df.iloc[:self.num_data]
-            with open(
-                self.workspace / "reference" / "reference_smiles.cbor", "wb"
-            ) as stream:
+            self.write_data(self.ref_df, lib_path)
+        else:
+            with open(lib_path, "rb") as stream:
+                num_compounds = calculate_cbor_size(stream)
+            if num_compounds != self.ref_df.shape[0]:
+                self.write_data(self.ref_df, lib_path)
+
+        # Check if subset of required number of SMILES present
+        trunc_path = Path(self.workspace / "reference" / "reference_smiles_truncated.cbor")
+        truncated_df = self.ref_df.iloc[:self.num_data]
+        if trunc_path.is_file() is False:
+            self.write_data(truncated_df, trunc_path)
+        else:
+            with open(trunc_path, "rb") as trunc_stream:
+                num_compounds = calculate_cbor_size(trunc_stream)
+            if num_compounds != truncated_df.shape[0]:
+                self.write_data(truncated_df, trunc_path)          
+            
+
+    def write_data(self: "ReferenceSmilesDM", df: pd.DataFrame, output_path: str) -> None:
+        # remove old dataloader if reference library is updated
+        if os.path.exists(os.path.join(self.workspace, "reference", "reference_smiles_dl.joblib")):
+            os.remove(os.path.join(self.workspace, "reference", "reference_smiles_dl.joblib"))
+
+        with open(output_path, "wb") as stream:
                 for i, row in tqdm(
                     df.iterrows(),
                     total=df.shape[0],
                     desc="Creating reference smiles dataset",
                 ):
                     dump((i, str(row.to_list()[0])), stream)
-            with open(
-                self.workspace / "reference" / "reference_smiles_truncated.cbor", "wb"
-            ) as stream:
-                for i, row in tqdm(
-                    truncated_df.iterrows(),
-                    total=truncated_df.shape[0],
-                    desc="Creating truncated reference smiles dataset",
-                ):
-                    dump((i, str(row.to_list()[0])), stream)
+        
 
     def setup(self: "ReferenceSmilesDM", stage: Optional[str] = "train") -> None:
         """Setup dataloaders.
@@ -99,32 +99,22 @@ class ReferenceSmilesDM(pl.LightningDataModule):
         """
         if stage == "train":
             self.dataset_size = self.num_data
-            self.dataset = wds.DataPipeline(
-                wds.SimpleShardList(
-                    str(
-                        (
-                            self.workspace / "reference" / "reference_smiles.cbor"
-                        ).absolute()
-                    )
-                ),
-                wds.cbors2_to_samples(),
-                wds.batched(self.batch_size, partial=False),
-            )
         elif stage == "val":
             self.dataset_size = self.num_data//10
-            self.dataset = wds.DataPipeline(
-                wds.SimpleShardList(
-                    str(
-                        (
-                            self.workspace
-                            / "reference"
-                            / "reference_smiles_truncated.cbor"
-                        ).absolute()
-                    )
-                ),
-                wds.cbors2_to_samples(),
-                wds.batched(self.batch_size, partial=False),
-            )
+
+        self.dataset = wds.DataPipeline(
+            wds.SimpleShardList(
+                str(
+                    (
+                        self.workspace
+                        / "reference"
+                        / "reference_smiles_truncated.cbor"
+                    ).absolute()
+                )
+            ),
+            wds.cbors2_to_samples(),
+            wds.batched(self.batch_size, partial=False),
+        )
 
     def train_dataloader(self: "ReferenceSmilesDM") -> DataLoader:
         """Train dataloader.

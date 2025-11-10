@@ -4,9 +4,10 @@ import onnx_runner
 from olinda.reports.plots import RocCurvePlot, RegressionPlotRaw
 
 class Reporter:
-    def __init__(self, zaira_path, olinda_path, featurizer="morgan"):
+    def __init__(self, zaira_path, olinda_path, featurizer):
         self.zaira_path = zaira_path
         self.olinda_path = olinda_path
+        self.featurizer = featurizer
         
         zaira_preds_df = pd.read_csv(os.path.join(self.zaira_path, "distill", "original_training_set.csv"))
         zaira_true_df = pd.read_csv(os.path.join(self.zaira_path, "report", "output_table.csv"))
@@ -14,12 +15,8 @@ class Reporter:
         self.zaira_train_preds = zaira_preds_df["prediction"].tolist()
         self.zaira_train_true = zaira_true_df["true-value"].tolist()
         
-        if featurizer == "morgan":
-            onnx_model = onnx_runner.ONNX_Runner(olinda_path, featurizer=onnx_runner.morgan_featurizer.MorganFeaturizer())
-        else:
-            onnx_model = onnx_runner.ONNX_Runner(olinda_path, featurizer=onnx_runner.morgan_featurizer.DatamolFeaturizer())
-
-        self.olinda_preds = onnx_model.predict(zaira_preds_df["smiles"].tolist())
+        self.onnx_model = onnx_runner.ONNX_Runner(olinda_path, featurizer=self.featurizer)
+        self.olinda_preds = self.onnx_model.predict(zaira_preds_df["smiles"].tolist())
 
     def report(self):
         roc = RocCurvePlot(self.zaira_train_true, self.zaira_train_preds, self.olinda_preds, ax=None, path=os.path.join(self.zaira_path, "distill"))

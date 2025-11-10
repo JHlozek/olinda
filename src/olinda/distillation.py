@@ -32,7 +32,7 @@ from onnxmltools.convert import convert_xgboost
 from skl2onnx.common.data_types import FloatTensorType, DoubleTensorType
 
 from olinda.data import ReferenceSmilesDM, FeaturizedSmilesDM, GenericOutputDM
-from olinda.featurizer import Featurizer, MorganFeaturizer, Flat2Grid, DatamolFeaturizer
+from olinda.featurizer import Featurizer, MorganFeaturizer
 from olinda.generic_model import GenericModel
 from olinda.models.distilled_model import DistilledModel
 from olinda.tuner import ModelTuner, XgboostTuner
@@ -74,7 +74,8 @@ class Distiller(object):
         self.clean = clean
         if test:
             self.num_data = self.num_data // 10
-        self.test = test      
+        self.test = test
+
 
     def distill(self, model: Any, output_path: str = None) -> pl.LightningModule:
         """Distill models.
@@ -123,13 +124,9 @@ class Distiller(object):
         if not os.path.exists(os.path.dirname(output_path)):
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
         model_onnx.save(output_path)
-        student_model.nn.save_model(output_path[:-5] + ".json")
+        student_model.nn.save_model(output_path.split(".")[0] + ".json")
 
-        if issubclass(type(self.featurizer), MorganFeaturizer):
-            feat = "morgan"
-        elif issubclass(type(self.featurizer), DatamolFeaturizer):
-            feat = "datamol"
-        r = Reporter(model_path, output_path, feat)
+        r = Reporter(model_path, output_path, self.featurizer)
         r.report()
 
         return model_onnx
@@ -283,23 +280,21 @@ def gen_model_output(
     Returns:
         pl.LightningDataModule: Dateset with featurized smiles.
     """
-
+    if issubclass(type(featurizer), MorganFeaturizer):
+        feat_name = "morgan"
+    feat_dl_path = os.path.join(working_dir, model.name, "featurized_smiles_dl_" + feat_name + ".joblib")
     os.makedirs(os.path.join(working_dir, model.name), exist_ok=True)
+
     if clean is True:
         featurized_smiles_dl = featurized_smiles_dm.train_dataloader()
     else:
         try:
-            featurized_smiles_dl = joblib.load(
-                Path(working_dir / (model.name) / "featurized_smiles_dl.joblib")
-            )
+            featurized_smiles_dl = joblib.load(feat_dl_path)
         except Exception:
             featurized_smiles_dl = featurized_smiles_dm.train_dataloader()
 
     # Save dataloader for resuming
-    joblib.dump(
-        featurized_smiles_dl,
-        Path(working_dir / (model.name) / "featurized_smiles_dl.joblib"),
-    )
+    joblib.dump(featurized_smiles_dl, feat_dl_path)
 
     with open(
         Path(working_dir) / (model.name) / "model_output.cbor", "wb"
@@ -447,7 +442,7 @@ def convert_to_onnx(
         onnx.onnx_ml_pb2.ModelProto: ONNX formatted model
     """
     
-    test_desc = featurizer.featurize(["CCC"])  
+    test_desc = featurizer.featurize(["CCC"])
     model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
                              [('input', FloatTensorType([None, test_desc.shape[1]]))])
 

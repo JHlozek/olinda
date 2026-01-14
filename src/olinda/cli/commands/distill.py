@@ -18,5 +18,5 @@ def distill_cmd():
 
         if output_path is None:
             model_name = os.path.basename(model_path) + ".onnx"
-            output_path = os.path.join(model_path, "distill", model_name)
+            output_path = os.path.normpath(os.path.join(model_path, "distill", model_name))
         student_model = d.distill(model_path, output_path)

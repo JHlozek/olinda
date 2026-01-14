@@ -8,7 +8,6 @@ import os
 from cbor2 import dump
 import pandas as pd
 import pytorch_lightning as pl
-import requests
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds

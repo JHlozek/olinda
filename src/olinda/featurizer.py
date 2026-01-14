@@ -6,7 +6,6 @@ from typing import Any, List
 import joblib
 import numpy as np
 import pandas as pd
-import datamol as dm
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem import AllChem #deprecate

@@ -30,7 +30,7 @@ class GenericModel(DistillBaseModel):
             self.name = type(model).__name__.lower()
 
         elif issubclass(type(model), (xgb.core.Booster)):
-            self.nn = model #update
+            self.nn = model
             self.type = "xgboost"
             self.name = type(model).__name__.lower()
       

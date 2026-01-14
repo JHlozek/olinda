@@ -123,6 +123,7 @@ class Distiller(object):
 
         if not os.path.exists(os.path.dirname(output_path)):
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        print("Saving to: " + output_path)
         model_onnx.save(output_path)
         student_model.nn.save_model(output_path.split(".")[0] + ".json")
 
@@ -441,7 +442,7 @@ def convert_to_onnx(
     Returns:
         onnx.onnx_ml_pb2.ModelProto: ONNX formatted model
     """
-    
+
     test_desc = featurizer.featurize(["CCC"])
     model_onnx = convert_xgboost(model.nn, 'tree-based classifier',
                              [('input', FloatTensorType([None, test_desc.shape[1]]))])

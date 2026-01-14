@@ -32,8 +32,9 @@ progress = ">=1.6"
 protobuf = "=3.20.3"
 optuna = ">=4.3.0"
 optuna-integration = {version = ">=4.3.0", extras = ["xgboost"]}
-xgboost = ">=3.0.0"
+xgboost = "=3.0.0"
 stylia = { git = "https://github.com/ersilia-os/stylia.git" }
+loguru = ">=0.7.3"
 
 
 [tool.poetry.dev-dependencies]

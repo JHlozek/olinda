@@ -22,15 +22,17 @@ python -m pip install -e .
 ```
 
 ### ZairaChem models
-To distill ZairaChem models, install the [ZairaChem](https://github.com/JHlozek/zaira-chem.git) pipeline which installs Olinda into the same environment
+To distill ZairaChem models, install the [ZairaChem](https://github.com/JHlozek/zaira-chem.git) pipeline in its own conda environment. Olinda will look for a 'zairachem' enviroment.
 
 
 ## Usage
-Within the conda environment, models can be distilled quickly with a single function:
+Within the Olinda conda environment, models can be distilled quickly with a single function:
 
 ```
-olinda distill -m path_to_model -o path_to_save.onnx
+olinda distill -m path_to_zaira_model
 ```
+
+The distilled model will be stored in /path_to_zaira_model/distill/
 
 Alternatively, you can run the distillation in Python code:
 =======
@@ -54,7 +56,7 @@ def distill(
     featurized_smiles_dm: Optional[FeaturizedSmilesDM] = None,
     generic_output_dm: Optional[GenericOutputDM] = None,
     test: bool = False,
-    num_data: int = 1999380,
+    num_data: int = 399964,
 ) -> pl.LightningModule:
     """Distill models.
 
@@ -68,7 +70,7 @@ def distill(
         featurized_smiles_dm (Optional[FeaturizedSmilesDM]): Reference Featurized SMILES datamodules.
         generic_output_dm (Optional[GenericOutputDM]): Precalculated training dataset for student model.
         test (bool): Run a test distillation on a smaller fraction of the dataset.
-        num_data: (int) : Set the number of ChEMBL training points to use (up to 1999380)
+        num_data: (int) : Set the number of ChEMBL training points to use (up to 399964)
 
     Returns:
         pl.LightningModule: Student Model.

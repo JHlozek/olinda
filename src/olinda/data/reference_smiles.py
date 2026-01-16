@@ -21,7 +21,6 @@ class ReferenceSmilesDM(pl.LightningDataModule):
     def __init__(
         self: "ReferenceSmilesDM",
         ref_df: pd.DataFrame,
-        num_data: int,
         workspace: Union[str, Path] = None,
         batch_size: int = 32,
         num_workers: int = 1,
@@ -45,7 +44,6 @@ class ReferenceSmilesDM(pl.LightningDataModule):
         self.num_workers = num_workers
         self.transform = transform
         self.target_transform = target_transform
-        self.num_data = num_data
 
     def prepare_data(self: "ReferenceSmilesDM") -> None:
         """Prepare data."""
@@ -64,18 +62,8 @@ class ReferenceSmilesDM(pl.LightningDataModule):
             if num_compounds != self.ref_df.shape[0]:
                 self.write_data(self.ref_df, lib_path)
 
-        # Check if subset of required number of SMILES present
-        trunc_path = Path(self.workspace / "reference" / "reference_smiles_truncated.cbor")
-        truncated_df = self.ref_df.iloc[:self.num_data]
-        if trunc_path.is_file() is False:
-            self.write_data(truncated_df, trunc_path)
-        else:
-            with open(trunc_path, "rb") as trunc_stream:
-                num_compounds = calculate_cbor_size(trunc_stream)
-            if num_compounds != truncated_df.shape[0]:
-                self.write_data(truncated_df, trunc_path)          
+        self.setup_dataloaders()
             
-
     def write_data(self: "ReferenceSmilesDM", df: pd.DataFrame, output_path: str) -> None:
         # remove old dataloader if reference library is updated
         if os.path.exists(os.path.join(self.workspace, "reference", "reference_smiles_dl.joblib")):
@@ -89,17 +77,13 @@ class ReferenceSmilesDM(pl.LightningDataModule):
                 ):
                     dump((i, str(row.to_list()[0])), stream)
         
-
-    def setup(self: "ReferenceSmilesDM", stage: Optional[str] = "train") -> None:
+    def setup_dataloaders(self: "ReferenceSmilesDM") -> None:
         """Setup dataloaders.
 
         Args:
             stage (Optional[str]): Optional pipeline state
         """
-        if stage == "train":
-            self.dataset_size = self.num_data
-        elif stage == "val":
-            self.dataset_size = self.num_data//10
+        self.dataset_size = self.ref_df.shape[0]
 
         self.dataset = wds.DataPipeline(
             wds.SimpleShardList(
@@ -107,7 +91,7 @@ class ReferenceSmilesDM(pl.LightningDataModule):
                     (
                         self.workspace
                         / "reference"
-                        / "reference_smiles_truncated.cbor"
+                        / "reference_smiles.cbor"
                     ).absolute()
                 )
             ),
@@ -115,28 +99,11 @@ class ReferenceSmilesDM(pl.LightningDataModule):
             wds.batched(self.batch_size, partial=False),
         )
 
-    def train_dataloader(self: "ReferenceSmilesDM") -> DataLoader:
+    def get_dataloader(self: "ReferenceSmilesDM") -> DataLoader:
         """Train dataloader.
 
         Returns:
             DataLoader: train dataloader
-        """
-        loader = wds.WebLoader(
-            self.dataset,
-            batch_size=None,
-            shuffle=False,
-            num_workers=self.num_workers,
-        )
-
-        loader.length = (self.dataset_size * self.num_workers) // self.batch_size
-
-        return loader
-
-    def val_dataloader(self: "ReferenceSmilesDM") -> DataLoader:
-        """Val dataloader.
-
-        Returns:
-            DataLoader: val dataloader
         """
         loader = wds.WebLoader(
             self.dataset,

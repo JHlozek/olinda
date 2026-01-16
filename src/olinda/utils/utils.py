@@ -44,8 +44,10 @@ def calculate_cbor_size(fp: BufferedWriter) -> int:
     """Calculate no of processed instances in a cbor file."""
     decoder = CBORDecoder(fp)
     size = 0
-    while fp.peek(1):
-        decoder.decode()
-        size += 1
+    while True:
+        try:
+            decoder.decode()
+            size += 1
+        except EOFError:
+            break
     return size
-

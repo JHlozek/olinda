@@ -20,11 +20,6 @@ import pytorch_lightning as pl
 import torch
 from tqdm import tqdm
 
-import boto3
-from botocore import UNSIGNED
-from botocore.config import Config
-import zipfile
-
 import onnx
 import pandas as pd
 
@@ -37,7 +32,6 @@ from olinda.generic_model import GenericModel
 from olinda.models.distilled_model import DistilledModel
 from olinda.tuner import ModelTuner, XgboostTuner
 from olinda.utils.utils import calculate_cbor_size, get_workspace_path
-from olinda.utils.s3 import download_s3_folder, ProgressPercentage
 from olinda.reports.report import Reporter
 from olinda.configs.vars import REF_FOLD_SIZE
 
@@ -96,21 +90,12 @@ class Distiller(object):
         
         ref_library_path = os.path.join(resources.files("olinda"), "reference_library/olinda_reference_library.csv")
         ref_library_df = pd.read_csv(ref_library_path)
-        self.reference_smiles_dm = ReferenceSmilesDM(ref_library_df, num_data=self.num_data)
+        self.reference_smiles_dm = ReferenceSmilesDM(ref_library_df)
         self.reference_smiles_dm.prepare_data()
-        self.reference_smiles_dm.setup("train")
         if self.num_data > len(ref_library_df):
             self.num_data = len(ref_library_df)
         
         if model.type == "zairachem":
-            #fetch_ref_library()            
-            """
-            zairachem_folds = math.ceil(self.num_data / REF_FOLD_SIZE) #Calculate number of folds required
-            zaira_describe_path = os.path.join(model.name[len(model.type)+1:], "descriptors")
-            with open(os.path.join(zaira_describe_path, "done_eos.json")) as used_desc_file:
-                req_descs = json.load(used_desc_file)
-            fetch_descriptors(zairachem_folds, req_descs)
-            """
             self.featurized_smiles_dm = gen_featurized_smiles(self.reference_smiles_dm, self.featurizer, self.working_dir, num_data=self.num_data, clean=self.clean)
             self.featurized_smiles_dm.setup("train")
             student_training_dm = gen_model_output(model, self.featurized_smiles_dm, self.featurizer, ref_library_path, self.working_dir, self.num_data, self.clean)
@@ -132,59 +117,6 @@ class Distiller(object):
 
         return model_onnx
 
-#Deprecated
-def fetch_ref_library():
-    s3 = boto3.resource('s3', config=Config(signature_version=UNSIGNED))
-    bucket = s3.Bucket('olinda')
-    
-    path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors")
-    os.makedirs(path, exist_ok=True)
-    
-    lib_name = "olinda_reference_library.csv"
-    ref_lib = os.path.join(path, lib_name)
-    # if no reference library or the size differs to the S3 bucket version
-    if os.path.exists(ref_lib) == False or bucket.Object(key=lib_name).content_length != os.path.getsize(ref_lib):
-        if os.path.exists(ref_lib):
-            os.remove(ref_lib)
-        bucket.download_file(
-                "olinda_reference_library.csv", ref_lib,
-                Callback=ProgressPercentage(bucket, "olinda_reference_library.csv")
-                )
-
-#Deprecated
-def fetch_descriptors(
-    num_folds: int,
-    req_descs: list,
-    ):
-    """Check if required precalculated descriptor folds are on disk and fetch missing folds 
-    
-    Args:
-        num_folds (int): Number of folds of 50k precalculated descriptors
-    """
-    
-    s3 = boto3.resource('s3', config=Config(signature_version=UNSIGNED))
-    bucket = s3.Bucket('olinda')
-    
-    local_path = os.path.join(os.path.expanduser("~"), "olinda", "precalculated_descriptors")
-    
-    for i in range(num_folds):
-        fold = "olinda_reference_descriptors_" + str(i*50) + "_" + str((i+1)*50) + "k"
-        if not os.path.exists(os.path.join(local_path, fold)):
-            print("Downloading precalculated descriptors: fold " + str(i+1) + " of " + str(num_folds))
-            # download compound lists and mapping
-            s3_fold_data = os.path.join(fold, "data")
-            local_fold_data = os.path.join(local_path, fold, "data")
-            download_s3_folder("olinda", s3_fold_data, local_fold_data)
-            bucket.download_file(os.path.join(fold, "reference_library.csv"), os.path.join(local_path, fold, "reference_library.csv"))
-        
-        # download raw descriptor files
-        for desc in req_descs:
-            s3_path = os.path.join(fold, "descriptors", desc)
-            dest_path = os.path.join(local_path, fold, "descriptors", desc)
-        
-            if not os.path.exists(dest_path):
-                download_s3_folder("olinda", s3_path, dest_path)
-                assert os.path.exists(dest_path)
 
 def gen_featurized_smiles(
     reference_smiles_dm: pl.LightningDataModule,
@@ -207,14 +139,14 @@ def gen_featurized_smiles(
 
     if clean is True:
         clean_workspace(Path(working_dir), featurizer=featurizer)
-        reference_smiles_dl = reference_smiles_dm.train_dataloader()
+        reference_smiles_dl = reference_smiles_dm.get_dataloader()
     else:
         try:
             reference_smiles_dl = joblib.load(
                 Path(working_dir / "reference" / "reference_smiles_dl.joblib")
             )
         except Exception:
-            reference_smiles_dl = reference_smiles_dm.train_dataloader()
+            reference_smiles_dl = reference_smiles_dm.get_dataloader()
 
     # Save dataloader for resuming
     joblib.dump(
@@ -222,7 +154,7 @@ def gen_featurized_smiles(
         Path(working_dir) / "reference" / "reference_smiles_dl.joblib",
     )
 
-    # find existing featurization file and calculate stop_step
+    # find existing featurization file and calculate stop_step for resuming
     try:
         with open(
             Path(working_dir)
@@ -242,14 +174,12 @@ def gen_featurized_smiles(
     ) as feature_stream:
         for i, batch in tqdm(
             enumerate(iter(reference_smiles_dl)),
-            total=reference_smiles_dl.length,
+            total=math.ceil(num_data / reference_smiles_dm.batch_size),
             desc="Featurizing",
         ):  
             if i < stop_step // len(batch[0]):
                 continue   
-            if i >= reference_smiles_dl.length:
-                break
-            if i >= num_data:
+            if i >= reference_smiles_dl.length or i >= math.ceil(num_data / reference_smiles_dm.batch_size):
                 break
                      
             output = featurizer.featurize(batch[1])

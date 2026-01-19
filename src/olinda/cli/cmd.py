@@ -7,6 +7,6 @@ class Command(object):
 
     def distill(self):
         distill_cmd()
-        
+
     def predict(self):
         predict_cmd()

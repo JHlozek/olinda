@@ -10,8 +10,6 @@ from cbor2 import CBORDecoder
 import gin
 from xdg import xdg_data_home
 
-import onnxruntime as rt
-
 
 def get_package_root_path() -> Path:
     """Get path of the package root.
@@ -46,33 +44,10 @@ def calculate_cbor_size(fp: BufferedWriter) -> int:
     """Calculate no of processed instances in a cbor file."""
     decoder = CBORDecoder(fp)
     size = 0
-    while fp.peek(1):
-        decoder.decode()
-        size += 1
+    while True:
+        try:
+            decoder.decode()
+            size += 1
+        except EOFError:
+            break
     return size
-
-
-def run_onnx_runtime(onnx_model: Any) -> Callable:
-    """Utility function to execute ONNX runtime.
-
-    Args:
-        onnx_model (str): ONNX model object
-
-    Returns:
-        Callable: Util function.
-    """
-    
-    def execute(x: list) -> list:
-        onnx_rt = rt.InferenceSession(onnx_model.SerializeToString())
-        output_names = [n.name for n in onnx_model.graph.output]
-        
-        #adapt for single versus batched queries
-        if np.array(x).shape[0] == 1:
-            preds = onnx_rt.run(output_names, {"input": x})[0]
-        else:
-            preds = [onnx_rt.run(output_names, {"input": val})[0] for val in x]
-            
-        #flatten list
-        preds = [float(ele) for ele in preds]
-        return preds
-    return execute
